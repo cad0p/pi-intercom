@@ -22,14 +22,11 @@ Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is 
 
 ## Install
 
-The extension lives at `~/.pi/agent/extensions/pi-intercom/`. Install dependencies and restart pi:
-
 ```bash
-cd ~/.pi/agent/extensions/pi-intercom
-npm install
+pi install npm:pi-intercom
 ```
 
-Then restart pi. The extension auto-connects to the broker on startup.
+Then restart Pi. The extension auto-connects to the broker on startup.
 
 ## Quick Start
 
