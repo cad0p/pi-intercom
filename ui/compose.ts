@@ -8,16 +8,14 @@ import type { SessionInfo } from "../types.js";
 export interface ComposeResult {
   sent: boolean;
   messageId?: string;
-  /** The message text (for persistence by caller) */
   text?: string;
-  /** Target session ID (for persistence by caller) */
-  targetId?: string;
 }
 
 export class ComposeOverlay implements Component {
   private tui: TUI;
   private theme: Theme;
   private target: SessionInfo;
+  private targetLabel: string;
   private client: IntercomClient;
   private done: (result: ComposeResult) => void;
   private inputBuffer: string = "";
@@ -28,12 +26,14 @@ export class ComposeOverlay implements Component {
     tui: TUI,
     theme: Theme,
     target: SessionInfo,
+    targetLabel: string,
     client: IntercomClient,
     done: (result: ComposeResult) => void,
   ) {
     this.tui = tui;
     this.theme = theme;
     this.target = target;
+    this.targetLabel = targetLabel;
     this.client = client;
     this.done = done;
   }
@@ -102,7 +102,6 @@ export class ComposeOverlay implements Component {
         sent: true, 
         messageId: result.id,
         text: this.inputBuffer.trim(),
-        targetId: this.target.id,
       });
     } catch (err) {
       this.error = (err as Error).message;
@@ -114,7 +113,7 @@ export class ComposeOverlay implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const borderWidth = Math.max(0, Math.min(width - 4, 60));
-    const targetName = this.target.name || this.target.id.slice(0, 8);
+    const targetName = this.targetLabel;
     const kb = getEditorKeybindings();
     const footer = `  ${kb.getKeys("selectConfirm").join("/")}: Send • ${kb.getKeys("selectCancel").join("/")}: Close`;
 

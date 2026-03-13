@@ -13,6 +13,7 @@ export class SessionListOverlay implements Component {
   constructor(
     theme: Theme,
     sessions: SessionInfo[],
+    duplicateNames: Set<string>,
     done: (result: SessionInfo | undefined) => void,
   ) {
     this.theme = theme;
@@ -21,7 +22,11 @@ export class SessionListOverlay implements Component {
 
     const items: SelectItem[] = sessions.map(s => ({
       value: s.id,
-      label: s.name || `Session ${s.id.slice(0, 8)}`,
+      label: s.name
+        ? duplicateNames.has(s.name.toLowerCase())
+          ? `${s.name} (${s.id.slice(0, 8)})`
+          : s.name
+        : `Session ${s.id.slice(0, 8)}`,
       description: `${s.cwd} • ${s.model}`,
     }));
 

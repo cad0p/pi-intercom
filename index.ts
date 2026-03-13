@@ -1,5 +1,5 @@
-// index.ts
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { randomUUID } from "crypto";
 import { Type } from "@sinclair/typebox";
 import { IntercomClient } from "./broker/client.js";
 import { spawnBrokerIfNeeded } from "./broker/spawn.js";
@@ -7,65 +7,143 @@ import { SessionListOverlay } from "./ui/session-list.js";
 import { ComposeOverlay, type ComposeResult } from "./ui/compose.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
-import type { SessionInfo, Message } from "./types.js";
-
+import type { SessionInfo, Message, Attachment } from "./types.js";
+function formatAttachments(attachments: Attachment[]): string {
+  let text = "";
+  for (const att of attachments) {
+    if (att.language) {
+      text += `\n\n---\n📎 ${att.name}\n~~~${att.language}\n${att.content}\n~~~`;
+    } else {
+      text += `\n\n---\n📎 ${att.name}\n${att.content}`;
+    }
+  }
+  return text;
+}
+function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
+  return new Set(
+    sessions
+      .map(s => s.name?.toLowerCase())
+      .filter((name): name is string => Boolean(name))
+      .filter((name, index, names) => names.indexOf(name) !== index)
+  );
+}
+function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): string {
+  if (!session.name) {
+    return session.id;
+  }
+  return duplicates.has(session.name.toLowerCase())
+    ? `${session.name} (${session.id.slice(0, 8)})`
+    : session.name;
+}
 export default function piIntercomExtension(pi: ExtensionAPI) {
-  // =========================================================================
-  // State (module-level, persists across events)
-  // =========================================================================
-  
   let client: IntercomClient | null = null;
   let config: IntercomConfig = loadConfig();
-
-  // =========================================================================
-  // Lifecycle Events
-  // =========================================================================
-
+  let replyWaiter: {
+    from: string;
+    replyTo: string;
+    resolve: (message: Message) => void;
+    reject: (error: Error) => void;
+  } | null = null;
+  function waitForReply(from: string, replyTo: string, signal?: AbortSignal): Promise<Message> {
+    if (replyWaiter) {
+      return Promise.reject(new Error("Already waiting for a reply"));
+    }
+    if (signal?.aborted) {
+      return Promise.reject(new Error("Cancelled"));
+    }
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        rejectReplyWaiter(new Error(`No reply from "${from}" within 10 minutes`));
+      }, 10 * 60 * 1000);
+      const cleanup = () => {
+        clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+        if (replyWaiter?.replyTo === replyTo) {
+          replyWaiter = null;
+        }
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("Cancelled"));
+      };
+      signal?.addEventListener("abort", onAbort, { once: true });
+      replyWaiter = {
+        from,
+        replyTo,
+        resolve: (message) => {
+          cleanup();
+          resolve(message);
+        },
+        reject: (error) => {
+          cleanup();
+          reject(error);
+        },
+      };
+    });
+  }
+  function rejectReplyWaiter(error: Error): void {
+    replyWaiter?.reject(error);
+  }
+  async function resolveSessionTarget(nameOrId: string): Promise<string | null> {
+    if (!client) {
+      return null;
+    }
+    const sessions = await client.listSessions();
+    const byId = sessions.find(s => s.id === nameOrId);
+    if (byId) {
+      return byId.id;
+    }
+    const lowerName = nameOrId.toLowerCase();
+    const byName = sessions.filter(s => s.name?.toLowerCase() === lowerName);
+    if (byName.length > 1) {
+      throw new Error(`Multiple sessions named "${nameOrId}" are connected. Use the session ID instead.`);
+    }
+    return byName[0]?.id ?? null;
+  }
   pi.on("session_start", async (_event, ctx) => {
-    
-    // Check if intercom is disabled in config
     if (!config.enabled) {
       return;
     }
-    
     try {
-      // Spawn broker if not running
       await spawnBrokerIfNeeded();
-      
-      // Create client and set up event handlers BEFORE connecting
-      // This avoids a race where events fire before handlers are attached
       client = new IntercomClient();
-      
-      // Handle incoming messages
       client.on("message", (from, message) => {
-        const senderName = from.name || from.id.slice(0, 8);
-        const replyHint = config.replyHint
-          ? ` — reply: intercom({ action: "send", to: ${JSON.stringify(senderName)}, message: "..." })`
+        if (replyWaiter) {
+          const senderTarget = from.name || from.id;
+          const fromMatches = senderTarget.toLowerCase() === replyWaiter.from.toLowerCase()
+            || from.id === replyWaiter.from;
+          const replyMatches = message.replyTo === replyWaiter.replyTo;
+          if (fromMatches && replyMatches) {
+            replyWaiter.resolve(message);
+            return;
+          }
+        }
+        const senderDisplay = from.name || from.id.slice(0, 8);
+        const replyCommand = `intercom({ action: "send", to: ${JSON.stringify(from.id)}, replyTo: ${JSON.stringify(message.id)}, message: "..." })`;
+        const replyHint = config.replyHint ? ` — reply: ${replyCommand}` : "";
+        const attachmentText = message.content.attachments?.length
+          ? formatAttachments(message.content.attachments)
           : "";
-        
+        const bodyText = `${message.content.text}${attachmentText}`;
+
         pi.sendMessage(
           {
             customType: "intercom_message",
-            content: `**📨 From ${senderName}** (${from.cwd})${replyHint}\n\n${message.content.text}`,
+            content: `**📨 From ${senderDisplay}** (${from.cwd})${replyHint}\n\n${bodyText}`,
             display: true,
-            details: { from, message },
+            details: { from, message, replyCommand: config.replyHint ? replyCommand : undefined, bodyText },
           },
           { triggerTurn: true, deliverAs: "steer" }
         );
       });
-      
-      // Handle disconnection (broker crashed, socket error, etc.)
       client.on("disconnected", () => {
         console.error("Intercom disconnected from broker");
+        rejectReplyWaiter(new Error("Disconnected while waiting for reply"));
         client = null;
       });
-      
-      // Handle client errors
       client.on("error", (err) => {
         console.error("Intercom error:", (err as Error).message);
       });
-      
-      // Now connect - handlers are already attached so no events will be missed
       await client.connect({
         name: pi.getSessionName(),
         cwd: ctx.cwd ?? process.cwd(),
@@ -73,42 +151,32 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         pid: process.pid,
         startedAt: Date.now(),
         lastActivity: Date.now(),
-        status: config.status,  // Initial status from config (optional)
+        status: config.status,
       });
     } catch (error) {
-      // Fail gracefully - intercom features will be unavailable
       console.error("Intercom failed to initialize:", (error as Error).message);
       client = null;
     }
   });
   
   pi.on("session_shutdown", async () => {
+    rejectReplyWaiter(new Error("Session shutting down"));
     if (client) {
       await client.disconnect();
       client = null;
     }
   });
-  
-  // Update presence when model changes
   pi.on("model_select", (event) => {
     if (client) {
       client.updatePresence({ model: event.model.id });
     }
   });
 
-  // =========================================================================
-  // Custom Message Renderer
-  // =========================================================================
-
   pi.registerMessageRenderer("intercom_message", (message, _options, theme) => {
-    const details = message.details as { from: SessionInfo; message: Message } | undefined;
+    const details = message.details as { from: SessionInfo; message: Message; replyCommand?: string; bodyText?: string } | undefined;
     if (!details) return undefined;
-    return new InlineMessageComponent(details.from, details.message, theme);
+    return new InlineMessageComponent(details.from, details.message, theme, details.replyCommand, details.bodyText);
   });
-
-  // =========================================================================
-  // Tool Registration
-  // =========================================================================
 
   pi.registerTool({
     name: "intercom",
@@ -119,17 +187,18 @@ Use this to communicate findings, request help, or coordinate work with other se
 Usage:
   intercom({ action: "list" })                    → List active sessions
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message
+  intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "status" })                  → Show connection status`,
 
     parameters: Type.Object({
       action: Type.String({
-        description: "Action: 'list', 'send', or 'status'",
+        description: "Action: 'list', 'send', 'ask', or 'status'",
       }),
       to: Type.Optional(Type.String({
-        description: "Target session name or ID (for 'send' action)",
+        description: "Target session name or ID (for 'send' or 'ask' action)",
       })),
       message: Type.Optional(Type.String({
-        description: "Message to send (for 'send' action)",
+        description: "Message to send (for 'send' or 'ask' action)",
       })),
       attachments: Type.Optional(Type.Array(Type.Object({
         type: Type.Union([Type.Literal("file"), Type.Literal("snippet"), Type.Literal("context")]),
@@ -138,7 +207,7 @@ Usage:
         language: Type.Optional(Type.String()),
       }))),
       replyTo: Type.Optional(Type.String({
-        description: "Message ID to reply to (for threading)",
+        description: "Message ID to reply to (for threading or responding to an 'ask')",
       })),
     }),
 
@@ -154,8 +223,9 @@ Usage:
           try {
             const mySessionId = client.sessionId;
             const sessions = await client.listSessions();
+            const duplicates = duplicateSessionNames(sessions);
             const otherSessions = sessions.filter(s => s.id !== mySessionId);
-            
+
             if (otherSessions.length === 0) {
               return { 
                 content: [{ type: "text", text: "No other sessions connected." }],
@@ -164,9 +234,8 @@ Usage:
             }
             
             const lines = otherSessions.map(s => {
-              const name = s.name || `Session ${s.id.slice(0, 8)}`;
               const status = s.status || "idle";
-              return `• ${name} — ${s.cwd} (${s.model}) [${status}]`;
+              return `• ${formatSessionLabel(s, duplicates)} — ${s.cwd} (${s.model}) [${status}]`;
             });
             
             return {
@@ -188,38 +257,45 @@ Usage:
               isError: true,
             };
           }
-
-          // Check if auto-send is enabled
-          if (!config.autoSend && ctx.hasUI) {
-            // Show confirmation dialog
-            const confirmed = await ctx.ui.confirm(
-              "Send Message",
-              `Send to "${to}":\n\n${message}`,
-            );
-            if (!confirmed) {
-              return {
-                content: [{ type: "text", text: "Message cancelled by user" }],
-                isError: false,
-              };
-            }
-          }
-
-          // Re-check client after potential await (could have disconnected during confirm)
           if (!client) {
             return {
               content: [{ type: "text", text: "Intercom disconnected" }],
               isError: true,
             };
           }
-
           try {
-            const result = await client.send(to, {
+            const sendTo = await resolveSessionTarget(to) ?? to;
+            if (sendTo === client.sessionId) {
+              return {
+                content: [{ type: "text", text: "Cannot message the current session" }],
+                isError: true,
+              };
+            }
+            if (!config.autoSend && ctx.hasUI) {
+              const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
+              const replyMeta = replyTo ? `\n\n(replyTo: ${replyTo})` : "";
+              const confirmed = await ctx.ui.confirm(
+                "Send Message",
+                `Send to "${to}":\n\n${message}${attachmentText}${replyMeta}`,
+              );
+              if (!confirmed) {
+                return {
+                  content: [{ type: "text", text: "Message cancelled by user" }],
+                  isError: false,
+                };
+              }
+            }
+            if (!client) {
+              return {
+                content: [{ type: "text", text: "Intercom disconnected" }],
+                isError: true,
+              };
+            }
+            const result = await client.send(sendTo, {
               text: message,
               attachments,
               replyTo,
             });
-
-            // Check if delivery actually succeeded
             if (!result.delivered) {
               return {
                 content: [{ type: "text", text: `Message to "${to}" was not delivered. Session may not exist or has disconnected.` }],
@@ -227,15 +303,12 @@ Usage:
                 details: { messageId: result.id, delivered: false },
               };
             }
-
-            // Persist sent message in our session
             pi.appendEntry("intercom_sent", {
               to,
               message: { text: message, attachments, replyTo },
               messageId: result.id,
               timestamp: Date.now(),
             });
-
             return {
               content: [{ type: "text", text: `Message sent to ${to}` }],
               isError: false,
@@ -244,6 +317,92 @@ Usage:
           } catch (error) {
             return {
               content: [{ type: "text", text: `Failed to send: ${(error as Error).message}` }],
+              isError: true,
+            };
+          }
+        }
+
+        case "ask": {
+          if (!to || !message) {
+            return {
+              content: [{ type: "text", text: "Missing 'to' or 'message' parameter" }],
+              isError: true,
+            };
+          }
+
+          if (replyWaiter) {
+            return {
+              content: [{ type: "text", text: "Already waiting for a reply" }],
+              isError: true,
+            };
+          }
+
+          if (!client) {
+            return {
+              content: [{ type: "text", text: "Intercom disconnected" }],
+              isError: true,
+            };
+          }
+
+          if (_signal?.aborted) {
+            return {
+              content: [{ type: "text", text: "Cancelled" }],
+              isError: true,
+            };
+          }
+          let replyPromise: Promise<Message> | null = null;
+
+          try {
+            const sendTo = await resolveSessionTarget(to) ?? to;
+            if (sendTo === client.sessionId) {
+              return {
+                content: [{ type: "text", text: "Cannot message the current session" }],
+                isError: true,
+              };
+            }
+            const questionId = randomUUID();
+            replyPromise = waitForReply(sendTo, questionId, _signal);
+            const sendResult = await client.send(sendTo, {
+              messageId: questionId,
+              text: message,
+              attachments,
+              replyTo,
+            });
+
+            if (!sendResult.delivered) {
+              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered. Session may not exist or has disconnected.`));
+              await replyPromise?.catch(() => undefined);
+              return {
+                content: [{ type: "text", text: `Message to "${to}" was not delivered. Session may not exist or has disconnected.` }],
+                isError: true,
+              };
+            }
+            pi.appendEntry("intercom_sent", {
+              to,
+              message: { text: message, attachments, replyTo },
+              messageId: sendResult.id,
+              timestamp: Date.now(),
+            });
+            const replyMessage = await replyPromise;
+            const replyText = replyMessage.content.text;
+            const replyAttachments = replyMessage.content.attachments?.length
+              ? formatAttachments(replyMessage.content.attachments)
+              : "";
+            pi.appendEntry("intercom_received", {
+              from: to,
+              message: { text: replyText, attachments: replyMessage.content.attachments },
+              messageId: replyMessage.id,
+              timestamp: replyMessage.timestamp,
+            });
+            return {
+              content: [{ type: "text", text: `**Reply from ${to}:**\n${replyText}${replyAttachments}` }],
+              isError: false,
+            };
+          } catch (error) {
+            rejectReplyWaiter(error as Error);
+            await replyPromise?.catch(() => undefined);
+            return {
+              content: [{ type: "text", text: `Failed: ${(error as Error).message}` }],
               isError: true,
             };
           }
@@ -277,18 +436,16 @@ Usage:
     },
   });
 
-  // =========================================================================
-  // Shared UI Handler (used by command and shortcut)
-  // =========================================================================
-
   async function openIntercomOverlay(ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1]): Promise<void> {
     if (!ctx.hasUI || !client) return;
 
     let sessions: SessionInfo[];
+    let duplicates: Set<string>;
     try {
       const mySessionId = client.sessionId;
-      sessions = await client.listSessions();
-      sessions = sessions.filter(s => s.id !== mySessionId);
+      const allSessions = await client.listSessions();
+      duplicates = duplicateSessionNames(allSessions);
+      sessions = allSessions.filter(s => s.id !== mySessionId);
     } catch (error) {
       ctx.ui.notify(`Failed to list sessions: ${(error as Error).message}`, "error");
       return;
@@ -296,22 +453,23 @@ Usage:
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
       (_tui, theme, _keybindings, done) => {
-        return new SessionListOverlay(theme, sessions, done);
+        return new SessionListOverlay(theme, sessions, duplicates, done);
       },
       { overlay: true }
     );
 
     if (!selectedSession) return;
 
-    // Re-check client after await (could have disconnected during selection)
     if (!client) {
       ctx.ui.notify("Intercom disconnected", "error");
       return;
     }
 
+    const targetLabel = formatSessionLabel(selectedSession, duplicates);
+
     const result = await ctx.ui.custom<ComposeResult>(
       (tui, theme, _keybindings, done) => {
-        return new ComposeOverlay(tui, theme, selectedSession, client!, done);
+        return new ComposeOverlay(tui, theme, selectedSession, targetLabel, client!, done);
       },
       { overlay: true }
     );
@@ -323,13 +481,9 @@ Usage:
         messageId: result.messageId,
         timestamp: Date.now(),
       });
-      ctx.ui.notify(`Message sent to ${selectedSession.name || selectedSession.id.slice(0, 8)}`, "info");
+      ctx.ui.notify(`Message sent to ${targetLabel}`, "info");
     }
   }
-
-  // =========================================================================
-  // Command and Shortcut Registration
-  // =========================================================================
 
   pi.registerCommand("intercom", {
     description: "Open session intercom overlay",

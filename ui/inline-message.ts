@@ -8,11 +8,15 @@ export class InlineMessageComponent implements Component {
   private from: SessionInfo;
   private message: Message;
   private theme: Theme;
+  private replyCommand?: string;
+  private bodyText?: string;
 
-  constructor(from: SessionInfo, message: Message, theme: Theme) {
+  constructor(from: SessionInfo, message: Message, theme: Theme, replyCommand?: string, bodyText?: string) {
     this.from = from;
     this.message = message;
     this.theme = theme;
+    this.replyCommand = replyCommand;
+    this.bodyText = bodyText;
   }
 
   invalidate(): void {}
@@ -32,15 +36,23 @@ export class InlineMessageComponent implements Component {
     const headerPadding = Math.max(0, bodyWidth - visibleWidth(headerText));
     lines.push(this.theme.fg("accent", `╭${headerText}${borderChar.repeat(headerPadding)}╮`));
 
-    // Message content
-    const contentLines = wrapTextWithAnsi(this.message.content.text, bodyWidth);
+    const contentLines = wrapTextWithAnsi(this.bodyText || this.message.content.text, bodyWidth);
     for (const line of contentLines) {
       const text = truncateToWidth(line, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));
       lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
     }
 
-    // Attachments
+    if (this.replyCommand) {
+      lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
+      const replyLines = wrapTextWithAnsi(this.theme.fg("dim", ` ↩ Reply: ${this.replyCommand}`), bodyWidth);
+      for (const line of replyLines) {
+        const text = truncateToWidth(line, bodyWidth, "");
+        const padding = Math.max(0, bodyWidth - visibleWidth(text));
+        lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
+      }
+    }
+
     if (this.message.content.attachments?.length) {
       lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
       for (const att of this.message.content.attachments) {
@@ -51,8 +63,8 @@ export class InlineMessageComponent implements Component {
       }
     }
 
-    // Reply indicator
     if (this.message.replyTo) {
+      lines.push(this.theme.fg("accent", `│${" ".repeat(bodyWidth)}│`));
       const reply = this.theme.fg("dim", ` ↳ Reply to ${this.message.replyTo.slice(0, 8)}`);
       const text = truncateToWidth(reply, bodyWidth, "");
       const padding = Math.max(0, bodyWidth - visibleWidth(text));

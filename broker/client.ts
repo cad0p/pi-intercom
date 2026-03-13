@@ -13,6 +13,7 @@ interface SendOptions {
   text: string;
   attachments?: Attachment[];
   replyTo?: string;
+  messageId?: string;
 }
 
 interface SendResult {
@@ -158,13 +159,13 @@ export class IntercomClient extends EventEmitter {
         this.emit("_registered", msg);
         break;
         
-      case "sessions":
-        // Resolve the oldest pending list request (broker sends one response per list request)
+      case "sessions": {
         const pending = this.pendingLists.shift();
         if (pending) {
           pending.resolve(msg.sessions);
         }
         break;
+      }
         
       case "message":
         this.emit("message", msg.from, msg.message);
@@ -289,7 +290,7 @@ export class IntercomClient extends EventEmitter {
       return Promise.reject(new Error("Not connected"));
     }
     
-    const messageId = randomUUID();
+    const messageId = options.messageId ?? randomUUID();
     const message: Message = {
       id: messageId,
       timestamp: Date.now(),
