@@ -282,12 +282,11 @@ Usage:
                 isError: true,
               };
             }
-            if (!config.autoSend && ctx.hasUI) {
+            if (!replyTo && !config.autoSend && ctx.hasUI) {
               const attachmentText = attachments?.length ? formatAttachments(attachments) : "";
-              const replyMeta = replyTo ? `\n\n(replyTo: ${replyTo})` : "";
               const confirmed = await ctx.ui.confirm(
                 "Send Message",
-                `Send to "${to}":\n\n${message}${attachmentText}${replyMeta}`,
+                `Send to "${to}":\n\n${message}${attachmentText}`,
               );
               if (!confirmed) {
                 return {

@@ -4,6 +4,17 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-04-04
+
+### Changed
+- **Reply flows skip approval** — `send` calls that include `replyTo` now bypass the confirmation dialog so reply-hint conversations can continue without an extra approval step.
+- **Overlay readability** — The session picker now shows session name/model on the first line and the cwd on a second line with middle truncation, making long paths much easier to distinguish.
+- **Documentation clarity** — The README now explains which sessions appear in the picker, how sessions become intercom-connected, and the difference between user-facing `/intercom` usage and agent tool calls.
+
+### Fixed
+- **Compose overlay crash** — Replaced the invalid `tui.scheduleRender()` calls with `tui.requestRender()`, fixing the compose overlay crash while typing or sending.
+- **Overlay panel chrome** — Restored bordered modal rendering for the session picker and compose overlay so they display as proper overlays instead of floating unboxed content.
+
 ## [0.1.1] - 2026-04-04
 
 ### Changed
@@ -13,6 +24,7 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 - **Pi compatibility refresh** — Updated the extension to match current Pi lifecycle and custom UI APIs, including `session_start` / `session_shutdown` and injected `ctx.ui.custom()` keybindings.
 - **Overlay keybindings** — The session picker and compose overlay now use injected, namespaced Pi keybindings instead of reading editor-global bindings directly.
 - **Session list correlation** — `list` / `sessions` now carry a `requestId`, so a delayed broker reply cannot be mistaken for a newer session-list request.
+- **Reply sends skip approval** — `send` calls that include `replyTo` now bypass the confirmation dialog so reply-hint flows work without an extra approval step.
 - **Documentation accuracy** — The README now matches the current implementation, including request correlation, persistence behavior, broker disconnect behavior, and the file layout.
 
 ### Fixed

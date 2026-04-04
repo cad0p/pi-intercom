@@ -6,8 +6,8 @@
 
 Direct 1:1 messaging between pi sessions on the same machine. Send context, findings, or requests from one session to another — whether you're driving the conversation or letting agents coordinate.
 
-```typescript
-intercom({ action: "send", to: "research", message: "Found the bug in auth.ts:142" })
+```text
+User flow: press Alt+M or run /intercom to pick a session and send a message
 ```
 
 ## Why
@@ -22,7 +22,7 @@ Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is 
 
 ## In One Minute
 
-Each pi session connects to a tiny local broker over a Unix socket. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a Unix socket. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
 
 ## Install
 
@@ -31,6 +31,14 @@ pi install npm:pi-intercom
 ```
 
 Then restart Pi. The extension auto-connects to the broker on startup.
+
+A session becomes intercom-connected when all of these are true:
+- the `pi-intercom` extension is installed and loaded in that session
+- `enabled` is not set to `false` in `~/.pi/agent/intercom/config.json`
+- the session has started or reloaded after the extension was installed
+- the local broker is running or can be auto-started
+
+The session list only shows intercom-connected sessions, not every open Pi process on the machine.
 
 ## Quick Start
 
@@ -161,7 +169,7 @@ This matters because the agent receiving the message doesn't need to construct t
 
 ### `send` vs `ask`
 
-`send` is fire-and-forget — the tool returns immediately after delivery. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config).
+`send` is fire-and-forget — the tool returns immediately after delivery. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config). Replies that include `replyTo` skip the confirmation dialog so reply-hint flows can continue without an extra approval step.
 
 `ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear.
 
@@ -181,9 +189,9 @@ The planner typically uses `send` (user reviews outgoing messages). The worker u
 
 ### Actions
 
-**`list`** — Returns all active sessions (excluding self) with name, working directory, model, and status.
+**`list`** — Returns all active intercom-connected sessions (excluding self) with name, working directory, model, and status.
 
-**`send`** — Sends a message to the specified session. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config). Returns delivery confirmation.
+**`send`** — Sends a message to the specified session. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config). Replies that include `replyTo` skip confirmation. Returns delivery confirmation.
 
 **`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). The reply is returned as the tool result. No confirmation dialog. Use this when the agent needs the answer to continue working.
 
@@ -213,7 +221,7 @@ Create `~/.pi/agent/intercom/config.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `autoSend` | false | Skip the confirmation dialog when agent sends messages from an interactive session with UI |
+| `autoSend` | false | Skip the confirmation dialog when agent sends non-reply messages from an interactive session with UI |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Custom status shown to other sessions |
@@ -244,7 +252,7 @@ graph TB
     B2 <-->|Unix Socket| B3
 ```
 
-The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session needs it and exits after 5 seconds when the last session disconnects.
+The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects.
 
 Messages use length-prefixed JSON over Unix sockets (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 
@@ -297,4 +305,5 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **Same machine only** — Uses Unix sockets, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
+- **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine
 - **Broker must be running** — It auto-spawns on first use, but if it crashes after connect, the current Pi session stays disconnected until restart
