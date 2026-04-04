@@ -5,7 +5,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
-import type { SessionInfo, ClientMessage, BrokerMessage } from "../types.js";
+import type { SessionInfo, Message, Attachment, BrokerMessage } from "../types.js";
 
 const INTERCOM_DIR = join(homedir(), ".pi/agent/intercom");
 const SOCKET_PATH = join(INTERCOM_DIR, "broker.sock");
@@ -16,18 +16,92 @@ interface ConnectedSession {
   info: SessionInfo;
 }
 
+function isAttachment(value: unknown): value is Attachment {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const attachment = value as Record<string, unknown>;
+
+  if (
+    attachment.type !== "file"
+    && attachment.type !== "snippet"
+    && attachment.type !== "context"
+  ) {
+    return false;
+  }
+
+  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") {
+    return false;
+  }
+
+  return attachment.language === undefined || typeof attachment.language === "string";
+}
+
+function isMessage(value: unknown): value is Message {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const message = value as Record<string, unknown>;
+
+  if (typeof message.id !== "string" || typeof message.timestamp !== "number") {
+    return false;
+  }
+
+  if (message.replyTo !== undefined && typeof message.replyTo !== "string") {
+    return false;
+  }
+
+  if (typeof message.content !== "object" || message.content === null) {
+    return false;
+  }
+
+  const content = message.content as Record<string, unknown>;
+  if (typeof content.text !== "string") {
+    return false;
+  }
+
+  return content.attachments === undefined
+    || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
+}
+
+function isSessionRegistration(value: unknown): value is Omit<SessionInfo, "id"> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const session = value as Record<string, unknown>;
+
+  if (
+    typeof session.cwd !== "string"
+    || typeof session.model !== "string"
+    || typeof session.pid !== "number"
+    || typeof session.startedAt !== "number"
+    || typeof session.lastActivity !== "number"
+  ) {
+    return false;
+  }
+
+  if (session.name !== undefined && typeof session.name !== "string") {
+    return false;
+  }
+
+  return session.status === undefined || typeof session.status === "string";
+}
+
 class IntercomBroker {
   private sessions = new Map<string, ConnectedSession>();
   private server: net.Server;
   private shutdownTimer: NodeJS.Timeout | null = null;
 
   constructor() {
-    // Ensure directory exists
     mkdirSync(INTERCOM_DIR, { recursive: true });
-
-    // Clean up stale socket
-    try { unlinkSync(SOCKET_PATH); } catch {}
-
+    try {
+      unlinkSync(SOCKET_PATH);
+    } catch {
+      // A clean startup has no stale socket to remove.
+    }
     this.server = net.createServer(this.handleConnection.bind(this));
   }
 
@@ -46,9 +120,11 @@ class IntercomBroker {
     let sessionId: string | null = null;
 
     const reader = createMessageReader((msg) => {
-      this.handleMessage(socket, msg as ClientMessage, sessionId, (id) => {
+      this.handleMessage(socket, msg, sessionId, (id) => {
         sessionId = id;
       });
+    }, (error) => {
+      socket.destroy(error);
     });
 
     socket.on("data", reader);
@@ -58,13 +134,12 @@ class IntercomBroker {
         this.sessions.delete(sessionId);
         this.broadcast({ type: "session_left", sessionId }, sessionId);
 
-        // Schedule shutdown if no sessions (with grace period)
         this.scheduleShutdownCheck();
       }
     });
 
-    socket.on("error", (err) => {
-      console.error("Socket error:", err.message);
+    socket.on("error", (error) => {
+      console.error("Socket error:", error);
     });
   }
 
@@ -82,23 +157,35 @@ class IntercomBroker {
 
   private handleMessage(
     socket: net.Socket,
-    msg: ClientMessage,
+    msg: unknown,
     currentId: string | null,
     setId: (id: string | null) => void,
   ): void {
-    switch (msg.type) {
+    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+      throw new Error("Invalid client message");
+    }
+
+    const clientMessage = msg as { type: string } & Record<string, unknown>;
+
+    if (currentId === null && clientMessage.type !== "register") {
+      throw new Error(`Received ${clientMessage.type} before register`);
+    }
+
+    switch (clientMessage.type) {
       case "register": {
-        // Prevent duplicate registration - ignore if already registered
+        if (!isSessionRegistration(clientMessage.session)) {
+          throw new Error("Invalid register message");
+        }
+
         if (currentId) {
-          break;
+          throw new Error("Received duplicate register message");
         }
         
         const id = randomUUID();
         setId(id);
-        const info: SessionInfo = { ...msg.session, id };
+        const info: SessionInfo = { ...clientMessage.session, id };
         this.sessions.set(id, { socket, info });
         
-        // Cancel any pending shutdown
         if (this.shutdownTimer) {
           clearTimeout(this.shutdownTimer);
           this.shutdownTimer = null;
@@ -110,92 +197,99 @@ class IntercomBroker {
       }
 
       case "unregister": {
-        if (currentId) {
-          this.sessions.delete(currentId);
-          this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
-          setId(null);
-          this.scheduleShutdownCheck();
-        }
+        this.sessions.delete(currentId);
+        this.broadcast({ type: "session_left", sessionId: currentId }, currentId);
+        setId(null);
+        this.scheduleShutdownCheck();
         break;
       }
 
       case "list": {
+        if (typeof clientMessage.requestId !== "string") {
+          throw new Error("Invalid list message");
+        }
+
         const sessions = Array.from(this.sessions.values()).map(s => s.info);
-        writeMessage(socket, { type: "sessions", sessions });
+        writeMessage(socket, { type: "sessions", requestId: clientMessage.requestId, sessions });
         break;
       }
 
       case "send": {
-        if (!currentId) {
-          writeMessage(socket, {
-            type: "delivery_failed",
-            messageId: msg.message?.id ?? "unknown",
-            reason: "Not registered",
-          });
-          break;
-        }
+        const message = clientMessage.message;
+        const messageId = isMessage(message) ? message.id : "unknown";
 
-        // Validate message has required fields
-        if (!msg.message?.id || typeof msg.message?.content?.text !== "string") {
+        if (typeof clientMessage.to !== "string" || !isMessage(message)) {
           writeMessage(socket, {
             type: "delivery_failed",
-            messageId: msg.message?.id ?? "unknown",
+            messageId,
             reason: "Invalid message format",
           });
           break;
         }
 
-        const target = this.findSession(msg.to);
-        if (target) {
+        const targets = this.findSessions(clientMessage.to);
+        if (targets.length === 1) {
           const from = this.sessions.get(currentId)!.info;
-          writeMessage(target.socket, {
+          writeMessage(targets[0].socket, {
             type: "message",
             from,
-            message: msg.message,
+            message,
           });
-          writeMessage(socket, { type: "delivered", messageId: msg.message.id });
-        } else {
+          writeMessage(socket, { type: "delivered", messageId: message.id });
+          break;
+        }
+
+        if (targets.length > 1) {
           writeMessage(socket, {
             type: "delivery_failed",
-            messageId: msg.message.id,
-            reason: "Session not found",
+            messageId: message.id,
+            reason: `Multiple sessions named \"${clientMessage.to}\" are connected. Use the session ID instead.`,
           });
+          break;
         }
+
+        writeMessage(socket, {
+          type: "delivery_failed",
+          messageId: message.id,
+          reason: "Session not found",
+        });
         break;
       }
 
       case "presence": {
-        if (currentId) {
-          const session = this.sessions.get(currentId);
-          if (session) {
-            if (msg.status !== undefined) {
-              session.info.status = msg.status;
+        const session = this.sessions.get(currentId);
+        if (session) {
+          if (clientMessage.status !== undefined) {
+            if (typeof clientMessage.status !== "string") {
+              throw new Error("Invalid presence status");
             }
-            if (msg.model !== undefined) {
-              session.info.model = msg.model;
-            }
-            session.info.lastActivity = Date.now();
-            this.broadcast({ type: "presence_update", session: session.info }, currentId);
+            session.info.status = clientMessage.status;
           }
+          if (clientMessage.model !== undefined) {
+            if (typeof clientMessage.model !== "string") {
+              throw new Error("Invalid presence model");
+            }
+            session.info.model = clientMessage.model;
+          }
+          session.info.lastActivity = Date.now();
+          this.broadcast({ type: "presence_update", session: session.info }, currentId);
         }
         break;
       }
+
+      default:
+        throw new Error(`Unknown client message type: ${clientMessage.type}`);
     }
   }
 
-  private findSession(nameOrId: string): ConnectedSession | undefined {
-    // Try by ID first
-    if (this.sessions.has(nameOrId)) {
-      return this.sessions.get(nameOrId);
+  private findSessions(nameOrId: string): ConnectedSession[] {
+    const byId = this.sessions.get(nameOrId);
+    if (byId) {
+      return [byId];
     }
-    // Try by name (case-insensitive)
+
     const lowerName = nameOrId.toLowerCase();
-    for (const session of this.sessions.values()) {
-      if (session.info.name?.toLowerCase() === lowerName) {
-        return session;
-      }
-    }
-    return undefined;
+    return Array.from(this.sessions.values()).filter(session => session.info.name?.toLowerCase() === lowerName);
   }
 
   private broadcast(msg: BrokerMessage, exclude?: string): void {
@@ -209,16 +303,20 @@ class IntercomBroker {
   private shutdown(): void {
     console.log("Broker shutting down");
     
-    // Close all connections
     for (const session of this.sessions.values()) {
       session.socket.end();
     }
     this.sessions.clear();
-
-    // Clean up files
-    try { unlinkSync(SOCKET_PATH); } catch {}
-    try { unlinkSync(PID_PATH); } catch {}
-    
+    try {
+      unlinkSync(SOCKET_PATH);
+    } catch {
+      // The socket may already be gone if shutdown started after a disconnect.
+    }
+    try {
+      unlinkSync(PID_PATH);
+    } catch {
+      // The PID file may already be gone if startup never completed.
+    }
     this.server.close();
     process.exit(0);
   }

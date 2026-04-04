@@ -16,8 +16,12 @@ export function writeMessage(socket: Socket, msg: unknown): void {
 /**
  * Create a message reader that handles partial reads.
  * Calls onMessage for each complete message received.
+ * Protocol or handler errors are reported to onError so the caller can close the socket.
  */
-export function createMessageReader(onMessage: (msg: unknown) => void) {
+export function createMessageReader(
+  onMessage: (msg: unknown) => void,
+  onError: (error: Error) => void,
+) {
   let buffer = Buffer.alloc(0);
 
   return (data: Buffer) => {
@@ -34,11 +38,21 @@ export function createMessageReader(onMessage: (msg: unknown) => void) {
       const payload = buffer.subarray(4, 4 + length);
       buffer = buffer.subarray(4 + length);
 
+      let msg: unknown;
       try {
-        const msg = JSON.parse(payload.toString("utf-8"));
+        msg = JSON.parse(payload.toString("utf-8"));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        onError(new Error(`Failed to parse intercom message: ${message}`, { cause: error }));
+        return;
+      }
+
+      try {
         onMessage(msg);
-      } catch (e) {
-        console.error("Failed to parse message:", e);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        onError(new Error(`Failed to handle intercom message: ${message}`, { cause: error }));
+        return;
       }
     }
   };

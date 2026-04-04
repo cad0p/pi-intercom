@@ -1,7 +1,7 @@
 // ui/compose.ts
 import type { Component, TUI } from "@mariozechner/pi-tui";
-import { getEditorKeybindings, truncateToWidth } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import { truncateToWidth } from "@mariozechner/pi-tui";
+import type { KeybindingsManager, Theme } from "@mariozechner/pi-coding-agent";
 import type { IntercomClient } from "../broker/client.js";
 import type { SessionInfo } from "../types.js";
 
@@ -14,6 +14,7 @@ export interface ComposeResult {
 export class ComposeOverlay implements Component {
   private tui: TUI;
   private theme: Theme;
+  private keybindings: KeybindingsManager;
   private target: SessionInfo;
   private targetLabel: string;
   private client: IntercomClient;
@@ -25,6 +26,7 @@ export class ComposeOverlay implements Component {
   constructor(
     tui: TUI,
     theme: Theme,
+    keybindings: KeybindingsManager,
     target: SessionInfo,
     targetLabel: string,
     client: IntercomClient,
@@ -32,6 +34,7 @@ export class ComposeOverlay implements Component {
   ) {
     this.tui = tui;
     this.theme = theme;
+    this.keybindings = keybindings;
     this.target = target;
     this.targetLabel = targetLabel;
     this.client = client;
@@ -42,10 +45,8 @@ export class ComposeOverlay implements Component {
 
   handleInput(data: string): void {
     if (this.sending) return;
-    const kb = getEditorKeybindings();
-
     // Handle escape key (cancel)
-    if (kb.matches(data, "selectCancel")) {
+    if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.done({ sent: false });
       return;
     }
@@ -56,7 +57,7 @@ export class ComposeOverlay implements Component {
       return;
     }
 
-    if (kb.matches(data, "selectConfirm")) {
+    if (this.keybindings.matches(data, "tui.select.confirm")) {
       // Enter - send if we have content
       if (this.inputBuffer.trim()) {
         this.sendMessage();
@@ -64,7 +65,7 @@ export class ComposeOverlay implements Component {
       return;
     }
 
-    if (kb.matches(data, "deleteCharBackward")) {
+    if (this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
       // Backspace
       this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
       this.tui.scheduleRender();
@@ -92,7 +93,7 @@ export class ComposeOverlay implements Component {
       
       // Check if delivery actually succeeded
       if (!result.delivered) {
-        this.error = "Message not delivered. Session may not exist or has disconnected.";
+        this.error = result.reason ?? "Message not delivered. Session may not exist or has disconnected.";
         this.sending = false;
         this.tui.scheduleRender();
         return;
@@ -103,8 +104,8 @@ export class ComposeOverlay implements Component {
         messageId: result.id,
         text: this.inputBuffer.trim(),
       });
-    } catch (err) {
-      this.error = (err as Error).message;
+    } catch (error) {
+      this.error = error instanceof Error ? error.message : String(error);
       this.sending = false;
       this.tui.scheduleRender();
     }
@@ -113,13 +114,11 @@ export class ComposeOverlay implements Component {
   render(width: number): string[] {
     const lines: string[] = [];
     const borderWidth = Math.max(0, Math.min(width - 4, 60));
-    const targetName = this.targetLabel;
-    const kb = getEditorKeybindings();
-    const footer = `  ${kb.getKeys("selectConfirm").join("/")}: Send • ${kb.getKeys("selectCancel").join("/")}: Close`;
+    const footer = `  ${this.keybindings.getKeys("tui.select.confirm").join("/")}: Send • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
 
     // Header
     lines.push(truncateToWidth(this.theme.fg("accent", "━".repeat(borderWidth)), width));
-    lines.push(truncateToWidth(this.theme.bold(`  Send to: ${targetName}`), width));
+    lines.push(truncateToWidth(this.theme.bold(`  Send to: ${this.targetLabel}`), width));
     lines.push(truncateToWidth(this.theme.fg("dim", `  ${this.target.cwd} • ${this.target.model}`), width));
     lines.push(truncateToWidth(this.theme.fg("accent", "━".repeat(borderWidth)), width));
     lines.push("");

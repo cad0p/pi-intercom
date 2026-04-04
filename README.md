@@ -20,6 +20,10 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
+## In One Minute
+
+Each pi session connects to a tiny local broker over a Unix socket. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+
 ## Install
 
 ```bash
@@ -68,7 +72,7 @@ Found the issue — UserService.validate() doesn't check for null input.
 See auth.ts:142-156.
 ```
 
-The reply hint (enabled by default) shows the exact `intercom()` call to respond, including the sender's session ID as `to` and the original message ID as `replyTo`, so `ask` can match the answer precisely. For `ask` to resolve reliably, replies should include that `replyTo` value. The message triggers a new turn, so the agent can respond or act on it immediately. If the message includes attachments, their content is also included in the agent-visible message body.
+The reply hint (enabled by default) shows the exact `intercom()` call to respond, including the sender's session ID as `to` and the original message ID as `replyTo`, so `ask` can match the answer precisely. For `ask` to resolve reliably, replies should include that `replyTo` value. The message triggers a new turn, so the agent can respond or act on it immediately. If the message includes attachments, their content is also included in the agent-visible message body. Messages are rendered inline in the chat and also written to Pi session history as extension entries.
 
 ## Workflow: Planner-Worker Coordination
 
@@ -157,7 +161,7 @@ This matters because the agent receiving the message doesn't need to construct t
 
 ### `send` vs `ask`
 
-`send` is fire-and-forget — the tool returns immediately after delivery. By default it shows a confirmation dialog (disable with `autoSend: true` in config).
+`send` is fire-and-forget — the tool returns immediately after delivery. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config).
 
 `ask` sends the message and blocks until the recipient responds (10-minute timeout). The reply comes back as the tool result, so the agent continues in the same turn with full context. No confirmation dialog — if you're asking and waiting, the intent is clear.
 
@@ -172,14 +176,14 @@ The planner typically uses `send` (user reviews outgoing messages). The worker u
 | `action` | string | `"list"`, `"send"`, `"ask"`, or `"status"` |
 | `to` | string | Target session name or ID (for send/ask) |
 | `message` | string | Message text (for send/ask) |
-| `attachments` | array | Optional file/snippet attachments |
+| `attachments` | array | Optional `file`, `snippet`, or `context` attachments |
 | `replyTo` | string | Optional message ID for threading or replying to an `ask` |
 
 ### Actions
 
 **`list`** — Returns all active sessions (excluding self) with name, working directory, model, and status.
 
-**`send`** — Sends a message to the specified session. By default, shows a confirmation dialog (disable with `autoSend: true` in config). Returns delivery confirmation.
+**`send`** — Sends a message to the specified session. In interactive sessions with UI available, it shows a confirmation dialog by default (disable with `autoSend: true` in config). Returns delivery confirmation.
 
 **`ask`** — Sends a message and waits for the recipient to reply (10-minute timeout). The reply is returned as the tool result. No confirmation dialog. Use this when the agent needs the answer to continue working.
 
@@ -209,7 +213,7 @@ Create `~/.pi/agent/intercom/config.json`:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `autoSend` | false | Skip confirmation dialog when agent sends messages |
+| `autoSend` | false | Skip the confirmation dialog when agent sends messages from an interactive session with UI |
 | `enabled` | true | Enable/disable intercom entirely |
 | `replyHint` | true | Include reply instruction in incoming messages |
 | `status` | — | Custom status shown to other sessions |
@@ -242,7 +246,7 @@ graph TB
 
 The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first session needs it and exits after 5 seconds when the last session disconnects.
 
-Messages use length-prefixed JSON over Unix sockets (4-byte length + JSON payload) to handle fragmentation properly.
+Messages use length-prefixed JSON over Unix sockets (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 
 Runtime files live at `~/.pi/agent/intercom/`:
 - `broker.sock` — Unix socket for communication
@@ -253,9 +257,9 @@ Runtime files live at `~/.pi/agent/intercom/`:
 
 **Unix sockets over TCP.** Same-machine only by design. Unix sockets are faster, need no port allocation, and get filesystem-level access control for free.
 
-**Auto-spawn with file lock.** The broker spawns on first connection and exits after 5 seconds idle. No daemon management. A spawn lock file (with PID and timestamp for staleness detection) prevents multiple clients from spawning duplicate brokers when sessions start simultaneously.
+**Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
 
-**`ask` as client-side blocking, not protocol-level.** The `ask` action blocks the tool call until a reply arrives, but this is purely client-side behavior — the broker still routes plain messages. No correlation IDs, no request/response message types, no protocol changes. The client registers an interceptor on the message handler, catches the reply before it triggers a new turn, and returns it as the tool result. Reply hints in `send` messages complement this by showing the recipient exactly how to respond.
+**`ask` stays client-side.** The broker still routes plain messages; it does not have a special request/response mode for `ask`. The client waits for a matching reply before it triggers a new turn, then returns that reply as the tool result. Reply hints make that flow practical by showing the recipient the exact `send` call to use. Separately, `list` / `sessions` now carry a `requestId` so a delayed session-list reply cannot be mistaken for a newer one.
 
 ## pi-intercom vs pi-messenger
 
@@ -265,7 +269,7 @@ Runtime files live at `~/.pi/agent/intercom/`:
 | **Primary use** | User orchestrating sessions | Autonomous agent coordination |
 | **Discovery** | Broker-based (real-time) | File-based registry |
 | **Messages** | Private, session-to-session | Broadcast to all agents |
-| **Persistence** | In sender & receiver history | Shared coordination files |
+| **Persistence** | In Pi session history | Shared coordination files |
 
 Use pi-messenger for multi-agent swarms working on a shared task. Use pi-intercom when you want to manually coordinate your own sessions or have one agent reach out to another specific session.
 
@@ -274,12 +278,12 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 ```
 ~/.pi/agent/extensions/pi-intercom/
 ├── package.json
-├── index.ts           # Extension entry point (497 lines)
+├── index.ts           # Extension entry point
 ├── types.ts           # SessionInfo, Message, protocol types
 ├── config.ts          # Config loading
 ├── broker/
-│   ├── broker.ts      # Broker process (228 lines)
-│   ├── client.ts      # IntercomClient class (345 lines)
+│   ├── broker.ts      # Broker process
+│   ├── client.ts      # IntercomClient class
 │   ├── framing.ts     # Length-prefixed JSON protocol
 │   └── spawn.ts       # Auto-spawn logic with lock file
 └── ui/
@@ -291,6 +295,6 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 ## Limitations
 
 - **Same machine only** — Uses Unix sockets, no network support
-- **No message history** — Messages appear inline but aren't persisted to a log file
-- **No attachments UI** — File/snippet attachments are supported in the protocol but not exposed in the compose overlay
-- **Broker must be running** — Auto-spawns, but if it crashes, sessions need to reconnect (happens on next action)
+- **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
+- **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
+- **Broker must be running** — It auto-spawns on first use, but if it crashes after connect, the current Pi session stays disconnected until restart

@@ -5,7 +5,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
-import type { SessionInfo, Message, BrokerMessage, Attachment } from "../types.js";
+import type { SessionInfo, Message, Attachment } from "../types.js";
 
 const BROKER_SOCKET = join(homedir(), ".pi/agent/intercom/broker.sock");
 
@@ -19,28 +19,126 @@ interface SendOptions {
 interface SendResult {
   id: string;
   delivered: boolean;
+  reason?: string;
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function isAttachment(value: unknown): value is Attachment {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const attachment = value as Record<string, unknown>;
+
+  if (
+    attachment.type !== "file"
+    && attachment.type !== "snippet"
+    && attachment.type !== "context"
+  ) {
+    return false;
+  }
+
+  if (typeof attachment.name !== "string" || typeof attachment.content !== "string") {
+    return false;
+  }
+
+  return attachment.language === undefined || typeof attachment.language === "string";
+}
+
+function isMessage(value: unknown): value is Message {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const message = value as Record<string, unknown>;
+
+  if (typeof message.id !== "string" || typeof message.timestamp !== "number") {
+    return false;
+  }
+
+  if (message.replyTo !== undefined && typeof message.replyTo !== "string") {
+    return false;
+  }
+
+  if (typeof message.content !== "object" || message.content === null) {
+    return false;
+  }
+
+  const content = message.content as Record<string, unknown>;
+  if (typeof content.text !== "string") {
+    return false;
+  }
+
+  return content.attachments === undefined
+    || (Array.isArray(content.attachments) && content.attachments.every(isAttachment));
+}
+
+function isSessionInfo(value: unknown): value is SessionInfo {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const session = value as Record<string, unknown>;
+
+  if (
+    typeof session.id !== "string"
+    || typeof session.cwd !== "string"
+    || typeof session.model !== "string"
+    || typeof session.pid !== "number"
+    || typeof session.startedAt !== "number"
+    || typeof session.lastActivity !== "number"
+  ) {
+    return false;
+  }
+
+  if (session.name !== undefined && typeof session.name !== "string") {
+    return false;
+  }
+
+  return session.status === undefined || typeof session.status === "string";
 }
 
 export class IntercomClient extends EventEmitter {
   private socket: net.Socket | null = null;
   private _sessionId: string | null = null;
   private pendingSends = new Map<string, { resolve: (r: SendResult) => void; reject: (e: Error) => void }>();
-  private pendingLists: Array<{ resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }> = [];
+  private pendingLists = new Map<string, { resolve: (sessions: SessionInfo[]) => void; reject: (e: Error) => void }>();
   private disconnecting = false;
+  private disconnectError: Error | null = null;
 
-  private failPending(reason: string): void {
+  private failPending(error: Error): void {
     for (const pending of this.pendingSends.values()) {
-      pending.reject(new Error(reason));
+      pending.reject(error);
     }
     this.pendingSends.clear();
-    for (const pending of this.pendingLists) {
-      pending.reject(new Error(reason));
+    for (const pending of this.pendingLists.values()) {
+      pending.reject(error);
     }
-    this.pendingLists = [];
+    this.pendingLists.clear();
   }
 
   get sessionId(): string | null {
     return this._sessionId;
+  }
+
+  private requireActiveSocket(): net.Socket {
+    if (this.disconnecting) {
+      throw new Error("Client disconnecting");
+    }
+
+    const socket = this.socket;
+    if (!socket || !this._sessionId) {
+      throw new Error("Not connected");
+    }
+
+    if (socket.destroyed || socket.writableEnded || !socket.writable) {
+      throw new Error("Client disconnected");
+    }
+
+    return socket;
   }
 
   connect(session: Omit<SessionInfo, "id">): Promise<void> {
@@ -51,6 +149,7 @@ export class IntercomClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       const socket = net.connect(BROKER_SOCKET);
       this.socket = socket;
+      this.disconnectError = null;
       let settled = false;
       const timeout = setTimeout(() => {
         if (!this._sessionId) {
@@ -63,10 +162,6 @@ export class IntercomClient extends EventEmitter {
           reject(new Error("Connection timeout"));
         }
       }, 10000);
-      
-      const reader = createMessageReader((msg: BrokerMessage) => {
-        this.handleBrokerMessage(msg);
-      });
       
       let connectionEstablished = false;
       
@@ -91,16 +186,18 @@ export class IntercomClient extends EventEmitter {
       const onClose = () => {
         const wasConnecting = !settled && !this._sessionId;
         const wasDisconnecting = this.disconnecting;
+        const disconnectError = this.disconnectError ?? new Error("Client disconnected");
         this.disconnecting = false;
         cleanupConnectionAttempt();
         cleanupSocketListeners();
-        this.failPending("Client disconnected");
+        this.failPending(disconnectError);
         if (this.socket === socket) {
           this.socket = null;
         }
         this._sessionId = null;
-        if (!wasDisconnecting) {
-          this.emit("disconnected");
+        this.disconnectError = null;
+        if (connectionEstablished && !wasDisconnecting) {
+          this.emit("disconnected", disconnectError);
         }
         if (wasConnecting) {
           reject(new Error("Connection closed before registration"));
@@ -108,12 +205,26 @@ export class IntercomClient extends EventEmitter {
       };
 
       const onSocketError = (err: Error) => {
-        // Only emit error events after connection is established.
-        // During connection, errors are handled by onError which rejects the promise.
         if (connectionEstablished) {
+          this.disconnectError = err;
           this.emit("error", err);
         }
       };
+
+      const onReaderError = (error: Error) => {
+        const protocolError = new Error(`Intercom protocol error: ${error.message}`, { cause: error });
+        if (!connectionEstablished) {
+          onError(protocolError);
+          return;
+        }
+        this.disconnectError = protocolError;
+        this.emit("error", protocolError);
+        socket.destroy();
+      };
+
+      const reader = createMessageReader((msg) => {
+        this.handleBrokerMessage(msg);
+      }, onReaderError);
       
       const cleanupConnectionAttempt = () => {
         this.off("_registered", onRegistered);
@@ -131,11 +242,7 @@ export class IntercomClient extends EventEmitter {
       socket.on("error", onError);
       socket.on("close", onClose);
       
-      // Permanent error handler (must stay attached after registration)
-      // Without this, socket errors would throw uncaught exceptions
       socket.on("error", onSocketError);
-      
-      // Wait for registration confirmation
       this.once("_registered", onRegistered);
       
       try {
@@ -147,63 +254,136 @@ export class IntercomClient extends EventEmitter {
           this.socket = null;
         }
         socket.destroy();
-        reject(error as Error);
+        reject(toError(error));
       }
     });
   }
 
-  private handleBrokerMessage(msg: BrokerMessage): void {
-    switch (msg.type) {
-      case "registered":
-        this._sessionId = msg.sessionId;
-        this.emit("_registered", msg);
+  private handleBrokerMessage(msg: unknown): void {
+    if (typeof msg !== "object" || msg === null || !("type" in msg) || typeof msg.type !== "string") {
+      throw new Error("Invalid broker message");
+    }
+
+    const brokerMessage = msg as { type: string } & Record<string, unknown>;
+
+    if (this._sessionId === null && brokerMessage.type !== "registered") {
+      throw new Error(`Received ${brokerMessage.type} before registered`);
+    }
+
+    switch (brokerMessage.type) {
+      case "registered": {
+        if (typeof brokerMessage.sessionId !== "string") {
+          throw new Error("Invalid registered message");
+        }
+
+        if (this._sessionId !== null) {
+          throw new Error("Received duplicate registered message");
+        }
+
+        this._sessionId = brokerMessage.sessionId;
+        this.emit("_registered", { type: "registered", sessionId: brokerMessage.sessionId });
         break;
-        
+      }
+
       case "sessions": {
-        const pending = this.pendingLists.shift();
-        if (pending) {
-          pending.resolve(msg.sessions);
+        const { requestId, sessions } = brokerMessage;
+        if (typeof requestId !== "string" || !Array.isArray(sessions) || !sessions.every(isSessionInfo)) {
+          throw new Error("Invalid sessions message");
         }
+
+        const pending = this.pendingLists.get(requestId);
+        if (!pending) {
+          // Late list responses can still arrive after the caller has already timed out.
+          return;
+        }
+
+        this.pendingLists.delete(requestId);
+        pending.resolve(sessions);
         break;
       }
-        
-      case "message":
-        this.emit("message", msg.from, msg.message);
+
+      case "message": {
+        const { from, message } = brokerMessage;
+        if (!isSessionInfo(from) || !isMessage(message)) {
+          throw new Error("Invalid message event");
+        }
+
+        this.emit("message", from, message);
         break;
-        
+      }
+
       case "delivered": {
-        const pending = this.pendingSends.get(msg.messageId);
-        if (pending) {
-          pending.resolve({ id: msg.messageId, delivered: true });
-          this.pendingSends.delete(msg.messageId);
+        const { messageId } = brokerMessage;
+        if (typeof messageId !== "string") {
+          throw new Error("Invalid delivered message");
         }
+
+        const pending = this.pendingSends.get(messageId);
+        if (!pending) {
+          // Late send responses are harmless once the caller has already timed out.
+          return;
+        }
+
+        this.pendingSends.delete(messageId);
+        pending.resolve({ id: messageId, delivered: true });
         break;
       }
-        
+
       case "delivery_failed": {
-        const pending = this.pendingSends.get(msg.messageId);
-        if (pending) {
-          pending.resolve({ id: msg.messageId, delivered: false });
-          this.pendingSends.delete(msg.messageId);
+        const { messageId, reason } = brokerMessage;
+        if (typeof messageId !== "string" || typeof reason !== "string") {
+          throw new Error("Invalid delivery_failed message");
         }
+
+        const pending = this.pendingSends.get(messageId);
+        if (!pending) {
+          // Late send responses are harmless once the caller has already timed out.
+          return;
+        }
+
+        this.pendingSends.delete(messageId);
+        pending.resolve({ id: messageId, delivered: false, reason });
         break;
       }
-        
-      case "session_joined":
-        this.emit("session_joined", msg.session);
+
+      case "session_joined": {
+        if (!isSessionInfo(brokerMessage.session)) {
+          throw new Error("Invalid session_joined message");
+        }
+
+        this.emit("session_joined", brokerMessage.session);
         break;
-        
-      case "session_left":
-        this.emit("session_left", msg.sessionId);
+      }
+
+      case "session_left": {
+        if (typeof brokerMessage.sessionId !== "string") {
+          throw new Error("Invalid session_left message");
+        }
+
+        this.emit("session_left", brokerMessage.sessionId);
         break;
-        
-      case "presence_update":
-        this.emit("presence_update", msg.session);
+      }
+
+      case "presence_update": {
+        if (!isSessionInfo(brokerMessage.session)) {
+          throw new Error("Invalid presence_update message");
+        }
+
+        this.emit("presence_update", brokerMessage.session);
         break;
-        
-      case "error":
-        this.emit("error", new Error(msg.error));
+      }
+
+      case "error": {
+        if (typeof brokerMessage.error !== "string") {
+          throw new Error("Invalid error message");
+        }
+
+        this.emit("error", new Error(brokerMessage.error));
         break;
+      }
+
+      default:
+        throw new Error(`Unknown broker message type: ${brokerMessage.type}`);
     }
   }
 
@@ -214,7 +394,8 @@ export class IntercomClient extends EventEmitter {
     }
 
     this.disconnecting = true;
-    this.failPending("Client disconnected");
+    this.disconnectError = null;
+    this.failPending(new Error("Client disconnected"));
 
     await new Promise<void>((resolve) => {
       let settled = false;
@@ -243,18 +424,22 @@ export class IntercomClient extends EventEmitter {
         writeMessage(socket, { type: "unregister" });
         socket.end();
       } catch {
+        // Disconnect should still finish even if the unregister write fails.
         socket.destroy();
       }
     });
   }
 
   listSessions(): Promise<SessionInfo[]> {
-    const socket = this.socket;
-    if (!socket || !this._sessionId) {
-      return Promise.reject(new Error("Not connected"));
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
     }
     
     return new Promise((resolve, reject) => {
+      const requestId = randomUUID();
       const wrappedResolve = (sessions: SessionInfo[]) => {
         clearTimeout(timeout);
         resolve(sessions);
@@ -264,30 +449,28 @@ export class IntercomClient extends EventEmitter {
         reject(error);
       };
       const timeout = setTimeout(() => {
-        const idx = this.pendingLists.findIndex(p => p.resolve === wrappedResolve);
-        if (idx !== -1) {
-          this.pendingLists.splice(idx, 1);
+        if (this.pendingLists.has(requestId)) {
+          this.pendingLists.delete(requestId);
           wrappedReject(new Error("List sessions timeout"));
         }
       }, 5000);
-      this.pendingLists.push({ resolve: wrappedResolve, reject: wrappedReject });
+      this.pendingLists.set(requestId, { resolve: wrappedResolve, reject: wrappedReject });
       try {
-        writeMessage(socket, { type: "list" });
+        writeMessage(socket, { type: "list", requestId });
       } catch (error) {
         clearTimeout(timeout);
-        const idx = this.pendingLists.findIndex(p => p.resolve === wrappedResolve);
-        if (idx !== -1) {
-          this.pendingLists.splice(idx, 1);
-        }
-        reject(error as Error);
+        this.pendingLists.delete(requestId);
+        reject(toError(error));
       }
     });
   }
 
   send(to: string, options: SendOptions): Promise<SendResult> {
-    const socket = this.socket;
-    if (!socket || !this._sessionId) {
-      return Promise.reject(new Error("Not connected"));
+    let socket: net.Socket;
+    try {
+      socket = this.requireActiveSocket();
+    } catch (error) {
+      return Promise.reject(toError(error));
     }
     
     const messageId = options.messageId ?? randomUUID();
@@ -324,15 +507,22 @@ export class IntercomClient extends EventEmitter {
       } catch (error) {
         clearTimeout(timeout);
         this.pendingSends.delete(messageId);
-        reject(error as Error);
+        reject(toError(error));
       }
     });
   }
 
   updatePresence(updates: { status?: string; model?: string }): void {
-    if (this.socket) {
-      writeMessage(this.socket, { type: "presence", ...updates });
+    if (this.disconnecting) {
+      return;
     }
+
+    const socket = this.socket;
+    if (!socket || !this._sessionId || socket.destroyed || socket.writableEnded || !socket.writable) {
+      return;
+    }
+
+    writeMessage(socket, { type: "presence", ...updates });
   }
 
   // EventEmitter events:
@@ -340,6 +530,6 @@ export class IntercomClient extends EventEmitter {
   // - "session_joined" (session: SessionInfo)
   // - "session_left" (sessionId: string)
   // - "presence_update" (session: SessionInfo)
-  // - "disconnected" ()
+  // - "disconnected" (error: Error)
   // - "error" (error: Error)
 }

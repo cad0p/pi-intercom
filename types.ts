@@ -34,14 +34,14 @@ export interface Attachment {
 export type ClientMessage =
   | { type: "register"; session: Omit<SessionInfo, "id"> }
   | { type: "unregister" }
-  | { type: "list" }
+  | { type: "list"; requestId: string }
   | { type: "send"; to: string; message: Message }
   | { type: "presence"; status?: string; model?: string };
 
 // Broker → Client messages
 export type BrokerMessage =
   | { type: "registered"; sessionId: string }
-  | { type: "sessions"; sessions: SessionInfo[] }
+  | { type: "sessions"; requestId: string; sessions: SessionInfo[] }
   | { type: "message"; from: SessionInfo; message: Message }
   | { type: "presence_update"; session: SessionInfo }
   | { type: "session_joined"; session: SessionInfo }

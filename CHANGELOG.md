@@ -2,6 +2,28 @@
 
 All notable changes to the `pi-intercom` extension will be documented in this file.
 
+## [Unreleased]
+
+## [0.1.1] - 2026-04-04
+
+### Changed
+- Added a `promptSnippet` for the `intercom` tool so Pi 0.59+ includes it in the default tool prompt section and improves session-to-session coordination discoverability.
+
+### Changed
+- **Pi compatibility refresh** — Updated the extension to match current Pi lifecycle and custom UI APIs, including `session_start` / `session_shutdown` and injected `ctx.ui.custom()` keybindings.
+- **Overlay keybindings** — The session picker and compose overlay now use injected, namespaced Pi keybindings instead of reading editor-global bindings directly.
+- **Session list correlation** — `list` / `sessions` now carry a `requestId`, so a delayed broker reply cannot be mistaken for a newer session-list request.
+- **Documentation accuracy** — The README now matches the current implementation, including request correlation, persistence behavior, broker disconnect behavior, and the file layout.
+
+### Fixed
+- **Protocol state handling** — Broker and client now reject malformed, unknown, duplicate, and out-of-order protocol messages instead of silently accepting them.
+- **Duplicate-name routing** — Sends to a duplicated session name now fail with an explicit error instead of routing to the first match.
+- **Delivery failure visibility** — `delivery_failed.reason` now flows through the client, tool results, and compose overlay error UI.
+- **Disconnect and startup errors** — Broker spawn failures, early broker exits, protocol failures, and disconnects now preserve the real error instead of collapsing to generic messages.
+- **Disconnect-time writes** — Client operations now fail cleanly during disconnect instead of writing to a closing socket and triggering `write after end` errors.
+- **Late-response handling** — Timed-out send/list requests no longer disconnect the client, and delayed list responses can no longer contaminate a later request with stale data.
+- **Config validation** — Invalid intercom config values are now reported and ignored instead of silently producing a broken runtime config.
+
 ## [0.1.0] - 2026-03-12
 
 ### Added

@@ -15,11 +15,13 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 export async function spawnBrokerIfNeeded(): Promise<void> {
-  // Ensure directory exists
   mkdirSync(INTERCOM_DIR, { recursive: true });
 
-  // Check if broker is already running
   if (await isBrokerRunning()) {
     return;
   }
@@ -35,7 +37,6 @@ export async function spawnBrokerIfNeeded(): Promise<void> {
       return;
     }
 
-    // Spawn broker as detached process using the extension-local tsx runtime
     const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
     const child = spawn("npx", ["--no-install", "tsx", brokerPath], {
       detached: true,
@@ -45,8 +46,36 @@ export async function spawnBrokerIfNeeded(): Promise<void> {
     });
     child.unref();
 
-    // Wait for broker to be ready
-    await waitForBroker();
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        child.off("error", onError);
+        child.off("exit", onExit);
+      };
+
+      const onError = (error: Error) => {
+        cleanup();
+        reject(new Error(`Failed to spawn intercom broker: ${error.message}`, { cause: error }));
+      };
+
+      const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        cleanup();
+        if (signal) {
+          reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
+          return;
+        }
+        reject(new Error(`Intercom broker exited before startup with code ${code ?? "unknown"}`));
+      };
+
+      child.once("error", onError);
+      child.once("exit", onExit);
+      waitForBroker().then(() => {
+        cleanup();
+        resolve();
+      }, (error) => {
+        cleanup();
+        reject(toError(error));
+      });
+    });
   } finally {
     releaseSpawnLock();
   }
@@ -66,6 +95,7 @@ async function isBrokerRunning(): Promise<boolean> {
     // Also verify socket is accepting connections
     return checkSocketConnectable();
   } catch {
+    // Missing or unreadable PID state means there is no live broker to reuse.
     return false;
   }
 }
@@ -139,12 +169,14 @@ function isSpawnLockStale(): boolean {
       try {
         process.kill(pid, 0);
       } catch {
+        // The process that created the lock is gone.
         return true;
       }
     }
 
     return !Number.isFinite(createdAt) || ageMs > 10_000;
   } catch {
+    // Unreadable lock contents are treated as stale so a new broker can start.
     return true;
   }
 }
@@ -152,7 +184,9 @@ function isSpawnLockStale(): boolean {
 function releaseSpawnLock(): void {
   try {
     unlinkSync(BROKER_SPAWN_LOCK);
-  } catch {}
+  } catch {
+    // Another cleanup path may already have removed the lock.
+  }
 }
 
 async function waitForBroker(timeoutMs = 5000): Promise<void> {

@@ -8,6 +8,15 @@ import { ComposeOverlay, type ComposeResult } from "./ui/compose.js";
 import { InlineMessageComponent } from "./ui/inline-message.js";
 import { loadConfig, type IntercomConfig } from "./config.js";
 import type { SessionInfo, Message, Attachment } from "./types.js";
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 function formatAttachments(attachments: Attachment[]): string {
   let text = "";
   for (const att of attachments) {
@@ -37,7 +46,7 @@ function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): stri
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
   let client: IntercomClient | null = null;
-  let config: IntercomConfig = loadConfig();
+  const config: IntercomConfig = loadConfig();
   let replyWaiter: {
     from: string;
     replyTo: string;
@@ -136,13 +145,13 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
           { triggerTurn: true, deliverAs: "steer" }
         );
       });
-      client.on("disconnected", () => {
-        console.error("Intercom disconnected from broker");
-        rejectReplyWaiter(new Error("Disconnected while waiting for reply"));
+      client.on("disconnected", (error: Error) => {
+        console.error("Intercom disconnected from broker:", error);
+        rejectReplyWaiter(new Error(`Disconnected while waiting for reply: ${error.message}`, { cause: error }));
         client = null;
       });
-      client.on("error", (err) => {
-        console.error("Intercom error:", (err as Error).message);
+      client.on("error", (error) => {
+        console.error("Intercom error:", error);
       });
       await client.connect({
         name: pi.getSessionName(),
@@ -154,7 +163,7 @@ export default function piIntercomExtension(pi: ExtensionAPI) {
         status: config.status,
       });
     } catch (error) {
-      console.error("Intercom failed to initialize:", (error as Error).message);
+      console.error("Intercom failed to initialize:", error);
       client = null;
     }
   });
@@ -189,6 +198,8 @@ Usage:
   intercom({ action: "send", to: "session-name", message: "..." })  → Send message
   intercom({ action: "ask", to: "session-name", message: "..." })   → Ask and wait for reply
   intercom({ action: "status" })                  → Show connection status`,
+    promptSnippet:
+      "Use to coordinate with other local pi sessions: list peers, send updates, ask for help, or check intercom connectivity.",
 
     parameters: Type.Object({
       action: Type.String({
@@ -244,7 +255,7 @@ Usage:
             };
           } catch (error) {
             return {
-              content: [{ type: "text", text: `Failed to list sessions: ${(error as Error).message}` }],
+              content: [{ type: "text", text: `Failed to list sessions: ${getErrorMessage(error)}` }],
               isError: true,
             };
           }
@@ -297,10 +308,11 @@ Usage:
               replyTo,
             });
             if (!result.delivered) {
+              const errorText = result.reason ?? "Session may not exist or has disconnected.";
               return {
-                content: [{ type: "text", text: `Message to "${to}" was not delivered. Session may not exist or has disconnected.` }],
+                content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
-                details: { messageId: result.id, delivered: false },
+                details: { messageId: result.id, delivered: false, reason: result.reason },
               };
             }
             pi.appendEntry("intercom_sent", {
@@ -316,7 +328,7 @@ Usage:
             };
           } catch (error) {
             return {
-              content: [{ type: "text", text: `Failed to send: ${(error as Error).message}` }],
+              content: [{ type: "text", text: `Failed to send: ${getErrorMessage(error)}` }],
               isError: true,
             };
           }
@@ -370,10 +382,17 @@ Usage:
             });
 
             if (!sendResult.delivered) {
-              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered. Session may not exist or has disconnected.`));
-              await replyPromise?.catch(() => undefined);
+              const errorText = sendResult.reason ?? "Session may not exist or has disconnected.";
+              rejectReplyWaiter(new Error(`Message to "${to}" was not delivered: ${errorText}`));
+              if (replyPromise) {
+                try {
+                  await replyPromise;
+                } catch {
+                  // The waiter was already rejected above. Keep the delivery failure as the only error here.
+                }
+              }
               return {
-                content: [{ type: "text", text: `Message to "${to}" was not delivered. Session may not exist or has disconnected.` }],
+                content: [{ type: "text", text: `Message to "${to}" was not delivered: ${errorText}` }],
                 isError: true,
               };
             }
@@ -399,10 +418,16 @@ Usage:
               isError: false,
             };
           } catch (error) {
-            rejectReplyWaiter(error as Error);
-            await replyPromise?.catch(() => undefined);
+            rejectReplyWaiter(toError(error));
+            if (replyPromise) {
+              try {
+                await replyPromise;
+              } catch {
+                // The waiter is cleanup-only on this path. The real failure is the one from the outer catch.
+              }
+            }
             return {
-              content: [{ type: "text", text: `Failed: ${(error as Error).message}` }],
+              content: [{ type: "text", text: `Failed: ${getErrorMessage(error)}` }],
               isError: true,
             };
           }
@@ -421,7 +446,7 @@ Usage:
             };
           } catch (error) {
             return {
-              content: [{ type: "text", text: `Failed to get status: ${(error as Error).message}` }],
+              content: [{ type: "text", text: `Failed to get status: ${getErrorMessage(error)}` }],
               isError: true,
             };
           }
@@ -447,13 +472,13 @@ Usage:
       duplicates = duplicateSessionNames(allSessions);
       sessions = allSessions.filter(s => s.id !== mySessionId);
     } catch (error) {
-      ctx.ui.notify(`Failed to list sessions: ${(error as Error).message}`, "error");
+      ctx.ui.notify(`Failed to list sessions: ${getErrorMessage(error)}`, "error");
       return;
     }
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
-      (_tui, theme, _keybindings, done) => {
-        return new SessionListOverlay(theme, sessions, duplicates, done);
+      (_tui, theme, keybindings, done) => {
+        return new SessionListOverlay(theme, keybindings, sessions, duplicates, done);
       },
       { overlay: true }
     );
@@ -468,8 +493,8 @@ Usage:
     const targetLabel = formatSessionLabel(selectedSession, duplicates);
 
     const result = await ctx.ui.custom<ComposeResult>(
-      (tui, theme, _keybindings, done) => {
-        return new ComposeOverlay(tui, theme, selectedSession, targetLabel, client!, done);
+      (tui, theme, keybindings, done) => {
+        return new ComposeOverlay(tui, theme, keybindings, selectedSession, targetLabel, client!, done);
       },
       { overlay: true }
     );

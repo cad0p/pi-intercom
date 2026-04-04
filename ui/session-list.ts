@@ -1,22 +1,25 @@
 // ui/session-list.ts
 import type { Component } from "@mariozechner/pi-tui";
-import { getEditorKeybindings, SelectList, type SelectItem, type SelectListTheme, truncateToWidth } from "@mariozechner/pi-tui";
-import type { Theme } from "@mariozechner/pi-coding-agent";
+import { SelectList, type SelectItem, type SelectListTheme, truncateToWidth } from "@mariozechner/pi-tui";
+import type { KeybindingsManager, Theme } from "@mariozechner/pi-coding-agent";
 import type { SessionInfo } from "../types.js";
 
 export class SessionListOverlay implements Component {
   private selectList: SelectList;
   private theme: Theme;
+  private keybindings: KeybindingsManager;
   private done: (result: SessionInfo | undefined) => void;
   private sessions: SessionInfo[];
 
   constructor(
     theme: Theme,
+    keybindings: KeybindingsManager,
     sessions: SessionInfo[],
     duplicateNames: Set<string>,
     done: (result: SessionInfo | undefined) => void,
   ) {
     this.theme = theme;
+    this.keybindings = keybindings;
     this.sessions = sessions;
     this.done = done;
 
@@ -61,8 +64,7 @@ export class SessionListOverlay implements Component {
 
   render(width: number): string[] {
     const lines: string[] = [];
-    const kb = getEditorKeybindings();
-    const footer = `  ${kb.getKeys("selectConfirm").join("/")}: Message • ${kb.getKeys("selectCancel").join("/")}: Close`;
+    const footer = `  ${this.keybindings.getKeys("tui.select.confirm").join("/")}: Message • ${this.keybindings.getKeys("tui.select.cancel").join("/")}: Close`;
     
     // Header
     lines.push(truncateToWidth(this.theme.fg("accent", "━".repeat(Math.min(width, 50))), width));
