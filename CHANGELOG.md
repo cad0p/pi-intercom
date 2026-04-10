@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-04-10
+
+### Changed
+- **Clearer self vs peer identity** — `intercom({ action: "list" })` now shows `Current session` and `Other sessions`, includes short session IDs, and marks same-folder peers with `[same cwd]` so agents are less likely to mistake another session in the same repo for themselves.
+- **Picker self anchor** — The session picker now shows the current session as a disabled `[self]` row at the top while keeping only peer sessions selectable.
+
 ## [0.1.2] - 2026-04-04
 
 ### Changed

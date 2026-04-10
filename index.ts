@@ -36,13 +36,23 @@ function duplicateSessionNames(sessions: SessionInfo[]): Set<string> {
       .filter((name, index, names) => names.indexOf(name) !== index)
   );
 }
+function shortSessionId(sessionId: string): string {
+  return sessionId.slice(0, 8);
+}
 function formatSessionLabel(session: SessionInfo, duplicates: Set<string>): string {
   if (!session.name) {
     return session.id;
   }
   return duplicates.has(session.name.toLowerCase())
-    ? `${session.name} (${session.id.slice(0, 8)})`
+    ? `${session.name} (${shortSessionId(session.id)})`
     : session.name;
+}
+function formatSessionListRow(session: SessionInfo, currentCwd: string, isSelf: boolean): string {
+  const name = session.name || "Unnamed session";
+  const tags = [isSelf ? "self" : session.cwd === currentCwd ? "same cwd" : undefined, session.status]
+    .filter((tag): tag is string => Boolean(tag));
+  const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
+  return `• ${name} (${shortSessionId(session.id)}) — ${session.cwd} (${session.model})${suffix}`;
 }
 export default function piIntercomExtension(pi: ExtensionAPI) {
   let client: IntercomClient | null = null;
@@ -234,23 +244,23 @@ Usage:
           try {
             const mySessionId = client.sessionId;
             const sessions = await client.listSessions();
-            const duplicates = duplicateSessionNames(sessions);
+            const currentSession = sessions.find(s => s.id === mySessionId);
             const otherSessions = sessions.filter(s => s.id !== mySessionId);
 
-            if (otherSessions.length === 0) {
-              return { 
-                content: [{ type: "text", text: "No other sessions connected." }],
-                isError: false,
+            if (!currentSession) {
+              return {
+                content: [{ type: "text", text: "Current session is missing from intercom session list." }],
+                isError: true,
               };
             }
-            
-            const lines = otherSessions.map(s => {
-              const status = s.status || "idle";
-              return `• ${formatSessionLabel(s, duplicates)} — ${s.cwd} (${s.model}) [${status}]`;
-            });
-            
+
+            const currentSection = `**Current session:**\n${formatSessionListRow(currentSession, currentSession.cwd, true)}`;
+            const otherSection = otherSessions.length === 0
+              ? "**Other sessions:**\nNo other sessions connected."
+              : `**Other sessions:**\n${otherSessions.map(s => formatSessionListRow(s, currentSession.cwd, false)).join("\n")}`;
+
             return {
-              content: [{ type: "text", text: `**Active Sessions:**\n${lines.join("\n")}` }],
+              content: [{ type: "text", text: `${currentSection}\n\n${otherSection}` }],
               isError: false,
             };
           } catch (error) {
@@ -463,11 +473,18 @@ Usage:
   async function openIntercomOverlay(ctx: Parameters<Parameters<typeof pi.registerCommand>[1]["handler"]>[1]): Promise<void> {
     if (!ctx.hasUI || !client) return;
 
+    let currentSession: SessionInfo;
     let sessions: SessionInfo[];
     let duplicates: Set<string>;
     try {
       const mySessionId = client.sessionId;
       const allSessions = await client.listSessions();
+      const foundCurrentSession = allSessions.find(s => s.id === mySessionId);
+      if (!foundCurrentSession) {
+        ctx.ui.notify("Current session is missing from intercom session list", "error");
+        return;
+      }
+      currentSession = foundCurrentSession;
       duplicates = duplicateSessionNames(allSessions);
       sessions = allSessions.filter(s => s.id !== mySessionId);
     } catch (error) {
@@ -477,7 +494,7 @@ Usage:
 
     const selectedSession = await ctx.ui.custom<SessionInfo | undefined>(
       (_tui, theme, keybindings, done) => {
-        return new SessionListOverlay(theme, keybindings, sessions, duplicates, done);
+        return new SessionListOverlay(theme, keybindings, currentSession, sessions, done);
       },
       { overlay: true }
     );

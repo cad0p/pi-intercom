@@ -1,4 +1,3 @@
-// ui/session-list.ts
 import type { Component } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { KeybindingsManager, Theme } from "@mariozechner/pi-coding-agent";
@@ -30,35 +29,39 @@ function middleTruncate(text: string, maxWidth: number): string {
   return truncateToWidth(`${left}…${right}`, maxWidth, "");
 }
 
+function shortSessionId(sessionId: string): string {
+  return sessionId.slice(0, 8);
+}
+
+function sessionTitle(session: SessionInfo, options?: { self?: boolean; sameCwd?: boolean }): string {
+  const name = session.name || "Unnamed session";
+  const tags = [options?.self ? "self" : undefined, options?.sameCwd ? "same cwd" : undefined]
+    .filter((tag): tag is string => Boolean(tag));
+  const suffix = tags.length ? ` [${tags.join(", ")}]` : "";
+  return `${name} (${shortSessionId(session.id)})${suffix}`;
+}
+
 export class SessionListOverlay implements Component {
   private theme: Theme;
   private keybindings: KeybindingsManager;
+  private currentSession: SessionInfo;
   private done: (result: SessionInfo | undefined) => void;
   private sessions: SessionInfo[];
-  private labels = new Map<string, string>();
   private selectedIndex = 0;
   private maxVisible = 8;
 
   constructor(
     theme: Theme,
     keybindings: KeybindingsManager,
+    currentSession: SessionInfo,
     sessions: SessionInfo[],
-    duplicateNames: Set<string>,
     done: (result: SessionInfo | undefined) => void,
   ) {
     this.theme = theme;
     this.keybindings = keybindings;
+    this.currentSession = currentSession;
     this.sessions = sessions;
     this.done = done;
-
-    for (const session of sessions) {
-      const label = session.name
-        ? duplicateNames.has(session.name.toLowerCase())
-          ? `${session.name} (${session.id.slice(0, 8)})`
-          : session.name
-        : `Session ${session.id.slice(0, 8)}`;
-      this.labels.set(session.id, label);
-    }
   }
 
   private onSessionSelect(sessionId: string): void {
@@ -109,8 +112,14 @@ export class SessionListOverlay implements Component {
 
     const lines: string[] = [];
     lines.push(border(`╭${"─".repeat(contentWidth)}╮`));
-    lines.push(row(this.theme.bold(" Active Sessions")));
+    lines.push(row(this.theme.bold(" Current Session")));
     lines.push(border(`├${"─".repeat(contentWidth)}┤`));
+    lines.push(row());
+    lines.push(row(`  ${this.theme.fg("dim", sessionTitle(this.currentSession, { self: true }))}`));
+    lines.push(row(`  ${this.theme.fg("dim", `${middleTruncate(this.currentSession.cwd, Math.max(8, contentWidth - 4))} • ${this.currentSession.model}`)}`));
+    lines.push(row());
+    lines.push(border(`├${"─".repeat(contentWidth)}┤`));
+    lines.push(row(this.theme.bold(" Other Sessions")));
     lines.push(row());
 
     if (this.sessions.length === 0) {
@@ -124,13 +133,13 @@ export class SessionListOverlay implements Component {
 
       for (let index = startIndex; index < endIndex; index += 1) {
         const session = this.sessions[index];
-        const label = this.labels.get(session.id) ?? `Session ${session.id.slice(0, 8)}`;
         const isSelected = index === this.selectedIndex;
+        const sameCwd = session.cwd === this.currentSession.cwd;
         const prefix = isSelected ? this.theme.fg("accent", "→ ") : "  ";
-        const labelText = `${label} ${this.theme.fg("dim", `(${session.model})`)}`;
-        const pathText = middleTruncate(session.cwd, Math.max(8, contentWidth - 4));
+        const title = sessionTitle(session, { sameCwd });
+        const pathText = `${middleTruncate(session.cwd, Math.max(8, contentWidth - 4))} • ${session.model}`;
 
-        lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", labelText) : labelText}`));
+        lines.push(row(`${prefix}${isSelected ? this.theme.fg("accent", title) : title}`));
         lines.push(row(`  ${this.theme.fg("dim", pathText)}`));
         if (index < endIndex - 1) {
           lines.push(row());
