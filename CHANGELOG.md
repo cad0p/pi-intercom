@@ -4,6 +4,14 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-04-13
+
+### Added
+- Added an MIT `LICENSE` file and set `package.json` `license` to `MIT`.
+
+### Changed
+- Updated `README.md` to mention the `pi-subagents` integration and link to https://github.com/nicobailon/pi-subagents.
+
 ## [0.1.3] - 2026-04-10
 
 ### Changed

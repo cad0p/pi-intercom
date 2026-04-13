@@ -20,6 +20,8 @@ Sometimes you're running multiple pi sessions — one researching, one executing
 
 Unlike pi-messenger (a shared chat room for multi-agent swarms), pi-intercom is for targeted 1:1 communication where you pick the recipient.
 
+Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobailon/pi-subagents): use `pi-subagents` to spin up delegated workers, then use `intercom` for direct, session-to-session handoffs and clarifications.
+
 ## In One Minute
 
 Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a Unix socket. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
