@@ -124,6 +124,18 @@ export class IntercomClient extends EventEmitter {
     return this._sessionId;
   }
 
+  isConnected(): boolean {
+    const socket = this.socket;
+    return Boolean(
+      socket
+      && this._sessionId
+      && !this.disconnecting
+      && !socket.destroyed
+      && !socket.writableEnded
+      && socket.writable,
+    );
+  }
+
   private requireActiveSocket(): net.Socket {
     if (this.disconnecting) {
       throw new Error("Client disconnecting");

@@ -256,7 +256,7 @@ graph TB
     B2 <-->|Unix Socket| B3
 ```
 
-The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects.
+The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
 
 Messages use length-prefixed JSON over Unix sockets (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 
@@ -310,4 +310,4 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine
-- **Broker must be running** — It auto-spawns on first use, but if it crashes after connect, the current Pi session stays disconnected until restart
+- **Broker must be running** — It auto-spawns on first use, and sessions now try to reconnect automatically if the broker disappears after connect
