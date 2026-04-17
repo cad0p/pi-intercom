@@ -1,4 +1,3 @@
-// ui/compose.ts
 import type { Component, TUI } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { KeybindingsManager, Theme } from "@mariozechner/pi-coding-agent";
@@ -45,20 +44,16 @@ export class ComposeOverlay implements Component {
 
   handleInput(data: string): void {
     if (this.sending) return;
-    // Handle escape key (cancel)
     if (this.keybindings.matches(data, "tui.select.cancel")) {
       this.done({ sent: false });
       return;
     }
 
-    // Ignore other escape sequences (arrows, function keys, etc.)
-    // These start with ESC but have additional characters
     if (data.startsWith("\x1b")) {
       return;
     }
 
     if (this.keybindings.matches(data, "tui.select.confirm")) {
-      // Enter - send if we have content
       if (this.inputBuffer.trim()) {
         this.sendMessage();
       }
@@ -66,14 +61,11 @@ export class ComposeOverlay implements Component {
     }
 
     if (this.keybindings.matches(data, "tui.editor.deleteCharBackward")) {
-      // Backspace
       this.inputBuffer = [...this.inputBuffer].slice(0, -1).join("");
       this.tui.requestRender();
       return;
     }
 
-    // Regular character input (handles both single chars and paste)
-    // Use spread operator to properly handle Unicode (including emoji)
     const printable = [...data].filter(c => c >= " ").join("");
     if (printable) {
       this.inputBuffer += printable;
@@ -91,7 +83,6 @@ export class ComposeOverlay implements Component {
         text: this.inputBuffer.trim(),
       });
       
-      // Check if delivery actually succeeded
       if (!result.delivered) {
         this.error = result.reason ?? "Message not delivered. Session may not exist or has disconnected.";
         this.sending = false;
@@ -99,8 +90,8 @@ export class ComposeOverlay implements Component {
         return;
       }
       
-      this.done({ 
-        sent: true, 
+      this.done({
+        sent: true,
         messageId: result.id,
         text: this.inputBuffer.trim(),
       });

@@ -1,4 +1,3 @@
-// config.ts
 import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 import { homedir } from "os";

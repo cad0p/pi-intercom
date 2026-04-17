@@ -1,8 +1,5 @@
-// broker/client.ts
 import { EventEmitter } from "events";
 import net from "net";
-import { join } from "path";
-import { homedir } from "os";
 import { randomUUID } from "crypto";
 import { writeMessage, createMessageReader } from "./framing.js";
 import { getBrokerSocketPath } from "./paths.js";
@@ -497,7 +494,6 @@ export class IntercomClient extends EventEmitter {
       },
     };
 
-    // Wait for delivered/delivery_failed response
     return new Promise((resolve, reject) => {
       const wrappedResolve = (result: SendResult) => {
         clearTimeout(timeout);
@@ -537,12 +533,4 @@ export class IntercomClient extends EventEmitter {
 
     writeMessage(socket, { type: "presence", ...updates });
   }
-
-  // EventEmitter events:
-  // - "message" (from: SessionInfo, message: Message)
-  // - "session_joined" (session: SessionInfo)
-  // - "session_left" (sessionId: string)
-  // - "presence_update" (session: SessionInfo)
-  // - "disconnected" (error: Error)
-  // - "error" (error: Error)
 }

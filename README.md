@@ -24,7 +24,7 @@ Pi-intercom also integrates well with [pi-subagents](https://github.com/nicobail
 
 ## In One Minute
 
-Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a Unix socket. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
+Each pi session that has `pi-intercom` loaded and enabled connects to a tiny local broker over a local IPC transport. The broker keeps track of connected sessions and routes direct messages to the one you target by name or session ID. The extension gives you both a tool (`intercom`) and a small overlay UI (`/intercom` or `Alt+M`). Incoming messages are rendered inline inside the recipient session, can trigger a turn immediately, and are also stored in Pi session history as extension entries.
 
 ## Install
 
@@ -258,16 +258,17 @@ graph TB
 
 The broker is a standalone TypeScript process that manages session registration and message routing. It auto-spawns when the first intercom-enabled session needs it and exits after 5 seconds when the last connected session disconnects. Clients now reconnect automatically if the broker disappears and later comes back.
 
-Messages use length-prefixed JSON over Unix sockets (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
+Messages use length-prefixed JSON over a local socket/pipe transport (4-byte length + JSON payload) to handle fragmentation properly. The protocol includes request correlation for session listing, explicit delivery failures, and validation for malformed or out-of-order messages.
 
 Runtime files live at `~/.pi/agent/intercom/`:
-- `broker.sock` — Unix socket for communication
+- `broker.sock` — Unix socket for communication on macOS and Linux
+- `broker-launch.vbs` — Windows helper script used to launch the broker without a console window
 - `broker.pid` — Broker process ID
 - `config.json` — User configuration
 
 ## Design Decisions
 
-**Unix sockets over TCP.** Same-machine only by design. Unix sockets are faster, need no port allocation, and get filesystem-level access control for free.
+**Local IPC instead of TCP.** Same-machine only by design. `pi-intercom` uses Unix sockets on macOS/Linux and a named pipe on Windows, which keeps setup simple and avoids port management.
 
 **Auto-spawn with file lock.** The broker starts on first connection and exits after 5 seconds idle. There is no daemon to manage. A spawn lock file, keyed by PID and timestamp, prevents duplicate brokers when multiple sessions start at once.
 
@@ -306,7 +307,7 @@ Use pi-messenger for multi-agent swarms working on a shared task. Use pi-interco
 
 ## Limitations
 
-- **Same machine only** — Uses Unix sockets, no network support
+- **Same machine only** — Uses local sockets/pipes, no network support
 - **No dedicated intercom log** — Messages are kept in Pi session history, but there is no separate intercom transcript or inbox
 - **No attachments UI** — `file`, `snippet`, and `context` attachments are supported in the protocol, but not in the compose overlay
 - **Only connected sessions appear** — The list shows Pi sessions that have loaded `pi-intercom` and successfully registered with the broker, not every open Pi process on the machine

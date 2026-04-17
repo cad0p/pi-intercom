@@ -4,6 +4,9 @@
   "license": "MIT",
   "type": "module",
   "main": "index.ts",
+  "scripts": {
+    "test": "tsx --test broker/paths.test.ts broker/spawn.test.ts"
+  },
   "keywords": [
     "pi-package"
   ],

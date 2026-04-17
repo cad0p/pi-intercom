@@ -1,4 +1,3 @@
-// ui/inline-message.ts
 import type { Component } from "@mariozechner/pi-tui";
 import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@mariozechner/pi-tui";
 import type { Theme } from "@mariozechner/pi-coding-agent";
@@ -29,7 +28,6 @@ export class InlineMessageComponent implements Component {
     }
     const bodyWidth = Math.max(1, Math.min(width - 2, 58));
 
-    // Top border with sender info
     const senderName = this.from.name || this.from.id.slice(0, 8);
     const header = ` 📨 From: ${senderName} (${this.from.cwd}) `;
     const headerText = truncateToWidth(header, bodyWidth, "");
@@ -71,7 +69,6 @@ export class InlineMessageComponent implements Component {
       lines.push(this.theme.fg("accent", `│${text}${" ".repeat(padding)}│`));
     }
 
-    // Bottom border
     lines.push(this.theme.fg("accent", `╰${borderChar.repeat(bodyWidth)}╯`));
 
     return lines;

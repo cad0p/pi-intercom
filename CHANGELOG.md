@@ -4,6 +4,12 @@ All notable changes to the `pi-intercom` extension will be documented in this fi
 
 ## [Unreleased]
 
+### Fixed
+- Broker startup now works on Windows by launching the local `tsx` CLI through a hidden `wscript.exe` helper without treating the helper's expected early exit as a broker failure.
+
+### Changed
+- The broker now uses a Windows named pipe instead of a Unix socket on Windows, while keeping the existing Unix socket transport on macOS and Linux.
+
 ## [0.1.9] - 2026-04-17
 
 ### Fixed

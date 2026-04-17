@@ -1,4 +1,3 @@
-// broker/broker.ts
 import net from "net";
 import { writeFileSync, unlinkSync, mkdirSync } from "fs";
 import { join } from "path";
@@ -113,8 +112,6 @@ class IntercomBroker {
       writeFileSync(PID_PATH, String(process.pid));
       console.log(`Intercom broker started (pid: ${process.pid})`);
     });
-
-    // Graceful shutdown
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
   }
@@ -155,7 +152,7 @@ class IntercomBroker {
         console.log("No sessions connected, shutting down");
         this.shutdown();
       }
-    }, 5000); // 5 second grace period
+    }, 5000);
   }
 
   private handleMessage(
@@ -333,5 +330,4 @@ class IntercomBroker {
   }
 }
 
-// Start broker
 new IntercomBroker().start();

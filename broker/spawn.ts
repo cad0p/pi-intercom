@@ -1,4 +1,3 @@
-// broker/spawn.ts
 import { spawn } from "child_process";
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "fs";
 import { join, dirname } from "path";
@@ -12,6 +11,20 @@ const EXTENSION_DIR = join(dirname(fileURLToPath(import.meta.url)), "..");
 const BROKER_SOCKET = getBrokerSocketPath();
 const BROKER_PID = join(INTERCOM_DIR, "broker.pid");
 const BROKER_SPAWN_LOCK = join(INTERCOM_DIR, "broker.spawn.lock");
+
+type BrokerLaunchSpec =
+  | {
+    kind: "direct";
+    command: string;
+    args: string[];
+  }
+  | {
+    kind: "windows-launcher";
+    command: string;
+    args: string[];
+    launcherPath: string;
+    launcherCommandLine: string;
+  };
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -37,21 +50,21 @@ export function getWindowsBrokerCommandLine(
   return [quoteWindowsArg(nodePath), quoteWindowsArg(getTsxCliPath(extensionDir)), quoteWindowsArg(brokerPath)].join(" ");
 }
 
+export function getWindowsHiddenLauncherScript(commandLine: string): string {
+  return [
+    'Set WshShell = CreateObject("WScript.Shell")',
+    `WshShell.Run "${commandLine.replace(/"/g, '""')}", 0, False`,
+    'Set WshShell = Nothing',
+    '',
+  ].join("\r\n");
+}
+
 function writeWindowsHiddenLauncher(
   commandLine: string,
   launcherPath: string = getWindowsHiddenLauncherPath(),
 ): string {
   mkdirSync(dirname(launcherPath), { recursive: true });
-  writeFileSync(
-    launcherPath,
-    [
-      'Set WshShell = CreateObject("WScript.Shell")',
-      `WshShell.Run "${commandLine.replace(/"/g, '""')}", 0, False`,
-      'Set WshShell = Nothing',
-      '',
-    ].join("\r\n"),
-    "utf-8",
-  );
+  writeFileSync(launcherPath, getWindowsHiddenLauncherScript(commandLine), "utf-8");
   return launcherPath;
 }
 
@@ -61,28 +74,26 @@ export function getBrokerLaunchSpec(
   platform: NodeJS.Platform = process.platform,
   intercomDir: string = INTERCOM_DIR,
   nodePath: string = process.execPath,
-): { command: string; args: string[] } {
+): BrokerLaunchSpec {
   if (platform === "win32") {
-    const launcherPath = writeWindowsHiddenLauncher(
-      getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath),
-      getWindowsHiddenLauncherPath(intercomDir),
-    );
+    const launcherPath = getWindowsHiddenLauncherPath(intercomDir);
     return {
+      kind: "windows-launcher",
       command: "wscript.exe",
       args: [launcherPath],
+      launcherPath,
+      launcherCommandLine: getWindowsBrokerCommandLine(brokerPath, extensionDir, nodePath),
     };
   }
 
   return {
-    command: nodePath,
-    args: [getTsxCliPath(extensionDir), brokerPath],
+    kind: "direct",
+    command: "npx",
+    args: ["--no-install", "tsx", brokerPath],
   };
 }
 
-export function getBrokerSpawnOptions(
-  extensionDir: string = EXTENSION_DIR,
-  _platform: NodeJS.Platform = process.platform,
-): {
+export function getBrokerSpawnOptions(extensionDir: string = EXTENSION_DIR): {
   detached: true;
   stdio: "ignore";
   cwd: string;
@@ -122,6 +133,9 @@ export async function spawnBrokerIfNeeded(): Promise<void> {
 
     const brokerPath = join(dirname(fileURLToPath(import.meta.url)), "broker.ts");
     const launch = getBrokerLaunchSpec(brokerPath);
+    if (launch.kind === "windows-launcher") {
+      writeWindowsHiddenLauncher(launch.launcherCommandLine, launch.launcherPath);
+    }
     const child = spawn(launch.command, launch.args, getBrokerSpawnOptions());
     child.unref();
 
@@ -137,6 +151,9 @@ export async function spawnBrokerIfNeeded(): Promise<void> {
       };
 
       const onExit = (code: number | null, signal: NodeJS.Signals | null) => {
+        if (launch.kind === "windows-launcher" && code === 0 && signal === null) {
+          return;
+        }
         cleanup();
         if (signal) {
           reject(new Error(`Intercom broker exited before startup with signal ${signal}`));
@@ -169,9 +186,7 @@ async function isBrokerRunning(): Promise<boolean> {
 
   try {
     const pid = parseInt(readFileSync(BROKER_PID, "utf-8").trim(), 10);
-    process.kill(pid, 0); // Check if process exists (signal 0 = no signal, just check)
-    
-    // Also verify socket is accepting connections
+    process.kill(pid, 0);
     return checkSocketConnectable();
   } catch {
     // Missing or unreadable PID state means there is no live broker to reuse.
@@ -198,7 +213,6 @@ function checkSocketConnectable(): Promise<boolean> {
     };
     socket.on("connect", onConnect);
     socket.on("error", onError);
-    // Timeout after 1 second
     const timeout = setTimeout(() => {
       socket.destroy();
       finish(false);
@@ -225,11 +239,9 @@ function acquireSpawnLock(): boolean {
         }
         continue;
       }
-      // Lock exists and is not stale - another process owns it
       return false;
     }
   }
-  // Couldn't acquire lock after max retries (stale lock that can't be deleted)
   return false;
 }
 

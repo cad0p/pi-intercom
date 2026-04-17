@@ -1,22 +1,18 @@
-// types.ts
-
-// Session information shared between broker and clients
 export interface SessionInfo {
-  id: string;              // Unique session identifier (assigned by broker)
-  name?: string;           // User-assigned name (/name command)
-  cwd: string;             // Working directory
-  model: string;           // Current model (e.g., "claude-sonnet-4")
-  pid: number;             // Process ID
-  startedAt: number;       // Unix timestamp
-  lastActivity: number;    // Unix timestamp
-  status?: string;         // Custom status (e.g., "researching", "executing")
+  id: string;
+  name?: string;
+  cwd: string;
+  model: string;
+  pid: number;
+  startedAt: number;
+  lastActivity: number;
+  status?: string;
 }
 
-// Message content
 export interface Message {
-  id: string;              // UUID
-  timestamp: number;       // Unix timestamp
-  replyTo?: string;        // Message ID for threading
+  id: string;
+  timestamp: number;
+  replyTo?: string;
   content: {
     text: string;
     attachments?: Attachment[];
@@ -26,11 +22,10 @@ export interface Message {
 export interface Attachment {
   type: "file" | "snippet" | "context";
   name: string;
-  content: string;         // File content or snippet text
-  language?: string;       // For syntax highlighting
+  content: string;
+  language?: string;
 }
 
-// Client → Broker messages
 export type ClientMessage =
   | { type: "register"; session: Omit<SessionInfo, "id"> }
   | { type: "unregister" }
@@ -38,7 +33,6 @@ export type ClientMessage =
   | { type: "send"; to: string; message: Message }
   | { type: "presence"; name?: string; status?: string; model?: string };
 
-// Broker → Client messages
 export type BrokerMessage =
   | { type: "registered"; sessionId: string }
   | { type: "sessions"; requestId: string; sessions: SessionInfo[] }

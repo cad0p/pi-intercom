@@ -1,4 +1,3 @@
-// broker/framing.ts
 import type { Socket } from "net";
 
 /**
@@ -31,7 +30,6 @@ export function createMessageReader(
       const length = buffer.readUInt32BE(0);
       
       if (buffer.length < 4 + length) {
-        // Waiting for more data
         break;
       }
 
